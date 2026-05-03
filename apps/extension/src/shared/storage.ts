@@ -4,14 +4,14 @@ import {
   STORAGE_KEYS
 } from "./constants";
 import type {
-  ImageTracerSettings,
+  ImageLabSettings,
   NotesByImageId,
   SearchEngineId,
   SearchHistoryItem,
   SelectedImage
 } from "./types";
 
-export const DEFAULT_SETTINGS: ImageTracerSettings = {
+export const DEFAULT_SETTINGS: ImageLabSettings = {
   enabledEngines: ["google", "bing", "tineye", "yandex", "saucenao"],
   privacyMode: true,
   instantOpen: false,
@@ -39,8 +39,8 @@ function storageSet(items: Record<string, unknown>): Promise<void> {
   });
 }
 
-export async function getSettings(): Promise<ImageTracerSettings> {
-  const result = await storageGet<Record<string, ImageTracerSettings>>({
+export async function getSettings(): Promise<ImageLabSettings> {
+  const result = await storageGet<Record<string, ImageLabSettings>>({
     [STORAGE_KEYS.settings]: DEFAULT_SETTINGS
   });
   return {
@@ -49,7 +49,7 @@ export async function getSettings(): Promise<ImageTracerSettings> {
   };
 }
 
-export async function saveSettings(settings: Partial<ImageTracerSettings>): Promise<void> {
+export async function saveSettings(settings: Partial<ImageLabSettings>): Promise<void> {
   const current = await getSettings();
   await storageSet({
     [STORAGE_KEYS.settings]: {

@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
-Name: imagetracer-api
+Name: imagelab-api
 Version: 0.1.0
-Summary: FastAPI backend for ImageTracer cloud-ready features.
+Summary: FastAPI backend for ImageLab cloud-ready features.
 Requires-Python: >=3.11
 Requires-Dist: fastapi>=0.115.0
 Requires-Dist: uvicorn[standard]>=0.30.0

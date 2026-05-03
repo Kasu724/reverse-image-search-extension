@@ -15,8 +15,8 @@ venv/
 *.pyc
 *.sqlite
 *.sqlite3
-imagetracer.db
-test_imagetracer.db
+imagelab.db
+test_imagelab.db
 uploaded_images/
 
 .env

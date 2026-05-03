@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ImageLab Conversion Failed</title>
+  </head>
+  <body>
+    <main class="conversion-error-card">
+      <p class="conversion-error-eyebrow">ImageLab</p>
+      <h1>Conversion failed</h1>
+      <p id="message" class="conversion-error-message"></p>
+
+      <dl>
+        <div>
+          <dt>Error code</dt>
+          <dd id="code"></dd>
+        </div>
+        <div>
+          <dt>Target</dt>
+          <dd id="target"></dd>
+        </div>
+        <div>
+          <dt>Source format</dt>
+          <dd id="source-format"></dd>
+        </div>
+        <div>
+          <dt>Source</dt>
+          <dd id="source-url"></dd>
+        </div>
+      </dl>
+
+      <p class="conversion-error-hint">
+        Try opening the image in its own tab, then run the conversion again. Some sites block image reuse,
+        and very large images may exceed browser canvas limits.
+      </p>
+
+      <div class="conversion-error-actions">
+        <button id="open-options" type="button">Open settings</button>
+        <button id="close-page" type="button">Close</button>
+      </div>
+    </main>
+
+    <script type="module" src="/src/converter/ErrorPage.ts"></script>
+  </body>
+</html>

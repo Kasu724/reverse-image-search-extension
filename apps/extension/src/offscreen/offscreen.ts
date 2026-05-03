@@ -1,3 +1,6 @@
+import { convertImageRequest, detectCropRequest } from "../converter/imageConverter";
+import { serializeError } from "../converter/errors";
+import { CONVERT_IMAGE_MESSAGE_TYPE, DETECT_CROP_MESSAGE_TYPE } from "../shared/constants";
 import { createOcrAdapter, rgbToHex } from "../shared/imageAnalysis";
 import type { DominantColor, LocalImageAnalysis } from "../shared/types";
 
@@ -6,7 +9,55 @@ interface AnalyzeRequest {
   srcUrl: string;
 }
 
-chrome.runtime.onMessage.addListener((request: AnalyzeRequest, _sender, sendResponse) => {
+interface ConvertRequest {
+  type: typeof CONVERT_IMAGE_MESSAGE_TYPE;
+  payload: unknown;
+}
+
+interface DetectCropRequest {
+  type: typeof DETECT_CROP_MESSAGE_TYPE;
+  payload: unknown;
+}
+
+type OffscreenRequest = AnalyzeRequest | ConvertRequest | DetectCropRequest;
+
+chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
+  if (request.type === CONVERT_IMAGE_MESSAGE_TYPE) {
+    void convertImageRequest(request.payload as Record<string, unknown>)
+      .then((result) =>
+        sendResponse({
+          ok: true,
+          ...result
+        })
+      )
+      .catch((error: Error) =>
+        sendResponse({
+          ok: false,
+          error: serializeError(error)
+        })
+      );
+
+    return true;
+  }
+
+  if (request.type === DETECT_CROP_MESSAGE_TYPE) {
+    void detectCropRequest(request.payload as Record<string, unknown>)
+      .then((result) =>
+        sendResponse({
+          ok: true,
+          ...result
+        })
+      )
+      .catch((error: Error) =>
+        sendResponse({
+          ok: false,
+          error: serializeError(error)
+        })
+      );
+
+    return true;
+  }
+
   if (request.type !== "OFFSCREEN_ANALYZE_IMAGE") {
     return false;
   }

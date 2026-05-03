@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-TEST_DB = Path(__file__).resolve().parent / "test_imagetracer.db"
+TEST_DB = Path(__file__).resolve().parent / "test_imagelab.db"
 TEST_UPLOADS = Path(__file__).resolve().parent / "test_uploads"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
-os.environ["IMAGETRACER_UPLOAD_DIR"] = str(TEST_UPLOADS)
+os.environ["IMAGELAB_UPLOAD_DIR"] = str(TEST_UPLOADS)
 
 from app.db import engine  # noqa: E402
 from app.main import app  # noqa: E402

@@ -9,7 +9,7 @@ class Base(DeclarativeBase):
     pass
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./imagetracer.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./imagelab.db")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 

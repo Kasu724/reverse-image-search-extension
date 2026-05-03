@@ -1,43 +1,27 @@
-# ImageTracer
+# ImageLab
 
-ImageTracer is a privacy-first reverse image search Chromium extension. It runs local/free features in the browser and includes a local FastAPI backend for optional cloud-ready workflows.
+ImageLab is a Manifest V3 Chromium extension for image tools such as image conversion and reverse image search.
 
-## Current Features
+## Features
 
-Free/local extension features:
+- Right-click an image, open **ImageLab**, then choose **Convert** or **Search**.
+- Convert and download selected images as PNG, JPG, or WEBP.
+- Use quick convert with a configurable default output format.
+- Crop manually in the ImageLab UI, apply aspect-ratio crops, or auto-trim transparent and solid-color borders.
+- Compress images to a target size from the UI or right-click presets for 1, 2, 5, and 10 MB.
+- Combine crop, compression, and format conversion in one local processing step.
+- Preserve dimensions by default, or scale down to a max width and/or height.
+- Configure JPG quality, WEBP quality, JPG background color, compression defaults, save-dialog behavior, and redundant-conversion skipping.
+- Search selected image URLs with Google Images, Bing Visual Search, TinEye, Yandex Images, SauceNAO, or all enabled engines.
+- Open the ImageLab popup/side panel to paste an image URL, upload a small local image, view local analysis, save notes, mark favorites, and review history.
+- Run local dominant-color analysis through an MV3 offscreen document.
+- Use the optional FastAPI backend for cloud-mode upload/search/analyze workflows.
 
-- Right-click an image and choose **Search image with ImageTracer**.
-- Right-click a normal page area and choose **Open ImageTracer** to open the extension UI without selecting an image.
-- Right-click an image and use the ImageTracer submenu to open the panel, search one engine, or search all enabled engines.
-- Paste a public image URL or upload a small local image from the popup or extension tab.
-- Capture the image URL, page URL, dimensions, alt text, and title when available.
-- Open URL-based reverse image searches in Google Images, Bing Visual Search, TinEye, Yandex Images, and SauceNAO.
-- Enable or disable engines in the options page.
-- Store current image, history, notes, and favorites in `chrome.storage.local`.
-- Run local image metadata and dominant-color analysis through an MV3 offscreen document.
-- Show privacy badges for local-only work, search-engine sharing, and cloud mode.
-- Keep OCR behind a clean adapter boundary with a lightweight mock implementation until Tesseract.js is intentionally bundled.
+## Project Layout
 
-Cloud-ready features:
-
-- FastAPI backend with SQLite and SQLAlchemy.
-- API-key auth seeded for local development.
-- Mock normalized cloud search, cloud analysis, saved searches, batch search, monitors, and usage endpoints.
-- Plan-aware monthly usage limits: free `0`, pro `300`, creator `1500`, team configurable.
-
-No paid services are used by default.
-
-## Tech Stack
-
-- Chromium Manifest V3
-- TypeScript
-- React
-- Vite
-- Tailwind CSS
-- Chrome extension APIs: context menus, storage, tabs, messaging, offscreen documents
-- FastAPI
-- SQLite via SQLAlchemy
-- Pytest and Vitest
+- `apps/extension`: the ImageLab Chrome extension.
+- `apps/api`: optional local FastAPI backend used by cloud mode.
+- `docs`: backend/cloud planning and deployment notes.
 
 ## Setup
 
@@ -47,7 +31,7 @@ Install JavaScript dependencies:
 pnpm install
 ```
 
-Install backend dependencies:
+Install backend dependencies only if you plan to use cloud mode:
 
 ```bash
 cd apps/api
@@ -56,25 +40,26 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-## Run the Extension
+## Build And Load
 
-For a production-style unpacked build:
+Build the unpacked extension:
 
 ```bash
 pnpm build
 ```
 
-Load `apps/extension/dist` as an unpacked extension.
+Load `apps/extension/dist` as an unpacked extension from `chrome://extensions`, `edge://extensions`, or another Chromium extension page with Developer mode enabled.
 
-For UI iteration only:
+## Development
 
 ```bash
 pnpm dev:extension
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
-The unpacked extension should still be loaded from a built `dist` directory because Chromium consumes the generated MV3 manifest and bundled service worker.
-
-## Run the Backend
+For the optional backend:
 
 ```bash
 cd apps/api
@@ -85,64 +70,14 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 Seeded local credentials:
 
 - API base URL: `http://127.0.0.1:8000`
-- API key: `dev_imagetracer_key`
-- User: `demo@imagetracer.local`
+- API key: `dev_imagelab_key`
+- User: `demo@imagelab.local`
 - Plan: `pro`
 
-## Load Unpacked Extension
+## Notes
 
-Chrome:
-
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Click **Load unpacked**.
-4. Select `apps/extension/dist`.
-
-Opera GX:
-
-1. Open `opera://extensions`.
-2. Enable Developer mode.
-3. Click **Load unpacked**.
-4. Select `apps/extension/dist`.
-
-Microsoft Edge:
-
-1. Open `edge://extensions`.
-2. Enable Developer mode.
-3. Click **Load unpacked**.
-4. Select `apps/extension/dist`.
-
-## Test
-
-```bash
-pnpm test
-pnpm test:api
-```
-
-## Build for Production
-
-```bash
-pnpm build
-```
-
-Package the contents of `apps/extension/dist` for distribution. The FastAPI app can be deployed separately and configured from the extension options page.
-
-## Known Limitations
-
-- URL-based reverse image search only works when the image has a public HTTP(S) URL.
-- Blob, data, protected, and local file images need a future upload/proxy flow.
-- Local uploads are stored as data URLs in the extension and limited to 2.5 MB there.
-- To send an uploaded image to third-party reverse search engines, Cloud Mode uploads it to the configured API first. The API base URL must be publicly reachable by those engines; `127.0.0.1` is useful for local mock cloud testing but not for real third-party fetches.
-- Canvas color extraction can be blocked by image CORS rules.
-- OCR is an adapter-backed mock by default; Tesseract.js is intentionally not bundled yet.
-- Cloud search returns mock normalized results. It does not scrape third-party engines or call paid APIs.
-- Billing and Stripe integration are placeholders.
-
-## Roadmap
-
-- Optional lazy-loaded Tesseract.js OCR pack.
-- Cloud upload/proxy flow for blob, data, and protected images.
-- Unified result aggregation from licensed APIs or user-authorized providers.
-- Saved cloud collections, monitoring jobs, and batch queues.
-- Team accounts, billing, and admin usage controls.
-- Store-ready icons, onboarding, and extension listing assets.
+- Conversion happens locally in the browser. It fetches only the image URL selected from the context menu.
+- Third-party reverse search opens external search-engine pages with the selected image URL.
+- Uploaded/data/blob/local images need cloud mode before third-party search engines can access them.
+- Animated GIF, animated WEBP, and APNG conversion uses the first frame.
+- Very large images are limited by browser memory and canvas limits.

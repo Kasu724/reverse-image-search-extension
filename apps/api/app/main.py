@@ -11,8 +11,8 @@ from app.models import ApiKey, User
 from app.routers import cloud, health
 
 
-DEMO_EMAIL = "demo@imagetracer.local"
-DEMO_API_KEY = "dev_imagetracer_key"
+DEMO_EMAIL = "demo@imagelab.local"
+DEMO_API_KEY = "dev_imagelab_key"
 
 
 @asynccontextmanager
@@ -23,9 +23,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="ImageTracer API",
+    title="ImageLab API",
     version="0.1.0",
-    description="Cloud-ready API for ImageTracer reverse image workflows.",
+    description="Cloud-ready API for ImageLab reverse image workflows.",
     lifespan=lifespan,
 )
 
@@ -41,7 +41,8 @@ app.include_router(cloud.router)
 
 
 def seed_dev_data() -> None:
-    if os.getenv("IMAGETRACER_SEED_DEMO", "1") != "1":
+    seed_demo = os.getenv("IMAGELAB_SEED_DEMO", os.getenv("IMAGETRACER_SEED_DEMO", "1"))
+    if seed_demo != "1":
         return
 
     with SessionLocal() as db:

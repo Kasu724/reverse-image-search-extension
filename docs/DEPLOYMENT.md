@@ -23,10 +23,10 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ## Environment Variables
 
-- `DATABASE_URL`: SQLAlchemy database URL. Defaults to `sqlite:///./imagetracer.db`.
-- `IMAGETRACER_SEED_DEMO`: Set to `0` to disable dev user/key seeding.
-- `IMAGETRACER_UPLOAD_DIR`: Directory for uploaded image proxy files. Defaults to `./uploaded_images`.
-- `IMAGETRACER_MAX_UPLOAD_BYTES`: Maximum backend upload size. Defaults to `5000000`.
+- `DATABASE_URL`: SQLAlchemy database URL. Defaults to `sqlite:///./imagelab.db`.
+- `IMAGELAB_SEED_DEMO`: Set to `0` to disable dev user/key seeding.
+- `IMAGELAB_UPLOAD_DIR`: Directory for uploaded image proxy files. Defaults to `./uploaded_images`.
+- `IMAGELAB_MAX_UPLOAD_BYTES`: Maximum backend upload size. Defaults to `5000000`.
 
 ## Render
 

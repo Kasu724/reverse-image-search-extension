@@ -1,4 +1,4 @@
-API_KEY = "dev_imagetracer_key"
+API_KEY = "dev_imagelab_key"
 ONE_PIXEL_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="

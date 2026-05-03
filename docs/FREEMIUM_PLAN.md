@@ -1,4 +1,4 @@
-# ImageTracer Freemium Plan
+# ImageLab Freemium Plan
 
 ## Free
 
@@ -35,4 +35,4 @@
 
 Local features run in the browser and store data in `chrome.storage.local`. Opening a third-party engine sends the image URL to that engine because that is how URL-based reverse image search works.
 
-Cloud features call the ImageTracer backend. These features require server resources because they need account state, usage accounting, saved records, batch queues, monitoring jobs, normalized result storage, upload/proxy support, and eventually paid provider integrations.
+Cloud features call the ImageLab backend. These features require server resources because they need account state, usage accounting, saved records, batch queues, monitoring jobs, normalized result storage, upload/proxy support, and eventually paid provider integrations.

@@ -9,8 +9,12 @@ import secrets
 from fastapi import HTTPException, status
 
 
-MAX_UPLOAD_BYTES = int(os.getenv("IMAGETRACER_MAX_UPLOAD_BYTES", "5000000"))
-UPLOAD_DIR = Path(os.getenv("IMAGETRACER_UPLOAD_DIR", "./uploaded_images"))
+MAX_UPLOAD_BYTES = int(
+    os.getenv("IMAGELAB_MAX_UPLOAD_BYTES", os.getenv("IMAGETRACER_MAX_UPLOAD_BYTES", "5000000"))
+)
+UPLOAD_DIR = Path(
+    os.getenv("IMAGELAB_UPLOAD_DIR", os.getenv("IMAGETRACER_UPLOAD_DIR", "./uploaded_images"))
+)
 
 CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",

@@ -1,1 +1,1 @@
-"""ImageTracer API package."""
+"""ImageLab API package."""

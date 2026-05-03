@@ -21,10 +21,10 @@ def mock_search_results(
         SearchResult(
             engine=ENGINE_LABELS.get(engine, engine.title()),
             title=f"Mock match from {ENGINE_LABELS.get(engine, engine.title())}",
-            url=f"https://example.com/imagetracer/mock/{engine}?image={engine}",
+            url=f"https://example.com/imagelab/mock/{engine}?image={engine}",
             thumbnail_url=image_url if image_url.startswith(("http://", "https://")) else None,
             snippet=(
-                "Normalized demo result for ImageTracer cloud mode. "
+                "Normalized demo result for ImageLab cloud mode. "
                 f"Source context: {source_hint[:120]}"
             ),
             confidence=max(0.62, 0.92 - index * 0.07),

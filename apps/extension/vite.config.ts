@@ -9,7 +9,7 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 function extensionManifestPlugin(): PluginOption {
   return {
-    name: "imagetracer-manifest",
+    name: "imagelab-manifest",
     generateBundle() {
       this.emitFile({
         type: "asset",
@@ -32,6 +32,7 @@ export default defineConfig({
         popup: resolve(projectRoot, "popup.html"),
         options: resolve(projectRoot, "options.html"),
         sidepanel: resolve(projectRoot, "sidepanel.html"),
+        conversionError: resolve(projectRoot, "conversion-error.html"),
         offscreen: resolve(projectRoot, "src/offscreen/offscreen.html"),
         background: resolve(projectRoot, "src/background/serviceWorker.ts"),
         contentScript: resolve(projectRoot, "src/content/contentScript.ts")

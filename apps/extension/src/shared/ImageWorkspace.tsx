@@ -1,7 +1,10 @@
 import {
   AlertTriangle,
   Cloud,
+  Crop,
+  Download,
   ExternalLink,
+  FileArchive,
   FileText,
   History,
   ImageIcon,
@@ -9,14 +12,23 @@ import {
   Loader2,
   Palette,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Star,
-  Upload
+  Upload,
+  Wand2
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { OUTPUT_FORMATS, formatLabel } from "../converter/constants";
+import {
+  DEFAULT_SETTINGS as DEFAULT_CONVERTER_SETTINGS,
+  normalizeCompressionTargetBytes,
+  readSettings as readConverterSettings
+} from "../converter/settings";
 import { getCloudUsage, runCloudAnalyze, runCloudSearch, uploadImageForSearch } from "./cloudClient";
 import { createSelectedImage, formatDimensions, imageNeedsUploadProxy } from "./imageMetadata";
 import { getCloudDisclosure, getThirdPartyDisclosure, getUploadProxyHint } from "./permissions";
@@ -37,7 +49,11 @@ import type {
   CloudAnalysisResponse,
   CloudSearchResult,
   CloudUsage,
-  ImageTracerSettings,
+  DetectedCropResult,
+  ImageProcessResult,
+  ImageLabSettings,
+  OutputImageFormat,
+  PixelCropRect,
   SearchEngineId,
   SearchHistoryItem,
   SelectedImage
@@ -48,12 +64,29 @@ interface ImageWorkspaceProps {
   surface: "popup" | "sidepanel";
 }
 
-type BusyAction = SearchEngineId | "all" | "analysis" | "cloud-search" | "cloud-analyze" | null;
+type ProcessingBusyAction = "process-image" | "detect-crop-transparent" | "detect-crop-solid";
+
+type BusyAction =
+  | SearchEngineId
+  | "all"
+  | "analysis"
+  | "cloud-search"
+  | "cloud-analyze"
+  | ProcessingBusyAction
+  | null;
+
+type ConverterSettings = typeof DEFAULT_CONVERTER_SETTINGS & {
+  defaultFormat: OutputImageFormat;
+  compressionTargetBytes: number;
+  compressionMinQuality: number;
+  compressionAllowResize: boolean;
+};
 
 const MAX_LOCAL_UPLOAD_BYTES = 2_500_000;
 
 export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
-  const [settings, setSettings] = useState<ImageTracerSettings | null>(null);
+  const [settings, setSettings] = useState<ImageLabSettings | null>(null);
+  const [converterSettings, setConverterSettings] = useState<ConverterSettings | null>(null);
   const [currentImage, setCurrentImageState] = useState<SelectedImage | null>(null);
   const [history, setHistory] = useState<SearchHistoryItem[]>([]);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -66,16 +99,31 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
   const [cloudResults, setCloudResults] = useState<CloudSearchResult[]>([]);
   const [cloudAnalysis, setCloudAnalysis] = useState<CloudAnalysisResponse | null>(null);
   const [usage, setUsage] = useState<CloudUsage | null>(null);
+  const [outputFormat, setOutputFormat] = useState<OutputImageFormat>("png");
+  const [cropEnabled, setCropEnabled] = useState(false);
+  const [cropRect, setCropRect] = useState<PixelCropRect | null>(null);
+  const [compressEnabled, setCompressEnabled] = useState(false);
+  const [compressTargetMb, setCompressTargetMb] = useState("2");
+  const [processingDefaultsLoaded, setProcessingDefaultsLoaded] = useState(false);
 
   async function refresh() {
-    const [nextSettings, image, nextHistory, nextNotes, nextFavorites] = await Promise.all([
+    const [
+      nextSettings,
+      nextConverterSettings,
+      image,
+      nextHistory,
+      nextNotes,
+      nextFavorites
+    ] = await Promise.all([
       getSettings(),
+      readConverterSettings(),
       getCurrentImage(),
       getHistory(),
       getNotes(),
       getFavorites()
     ]);
     setSettings(nextSettings);
+    setConverterSettings(nextConverterSettings as ConverterSettings);
     setCurrentImageState(image);
     setHistory(nextHistory);
     setNotes(nextNotes);
@@ -89,6 +137,28 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
       void refresh();
     });
   }, []);
+
+  useEffect(() => {
+    if (!converterSettings || processingDefaultsLoaded) {
+      return;
+    }
+
+    setOutputFormat(converterSettings.defaultFormat);
+    setCompressTargetMb(formatMegabytesInput(converterSettings.compressionTargetBytes));
+    setProcessingDefaultsLoaded(true);
+  }, [converterSettings, processingDefaultsLoaded]);
+
+  useEffect(() => {
+    const size = getImagePixelSize(currentImage);
+    setCropEnabled(false);
+    setCropRect(size ? { x: 0, y: 0, width: size.width, height: size.height } : null);
+  }, [
+    currentImage?.id,
+    currentImage?.width,
+    currentImage?.height,
+    currentImage?.analysis?.width,
+    currentImage?.analysis?.height
+  ]);
 
   const enabledEngines = useMemo(() => {
     if (!settings) {
@@ -333,6 +403,74 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     });
   }
 
+  async function detectCrop(mode: "transparent" | "solid") {
+    if (!currentImage) {
+      return;
+    }
+
+    await runAction(`detect-crop-${mode}` as ProcessingBusyAction, async () => {
+      const response = await sendRuntimeMessage<DetectedCropResult>({
+        type: "DETECT_CURRENT_IMAGE_CROP",
+        mode
+      });
+      if (!response.ok || !response.data) {
+        throw new Error(response.error ?? "Could not detect a crop area.");
+      }
+      setCropEnabled(true);
+      setCropRect(response.data.crop);
+      setStatus(
+        mode === "transparent"
+          ? "Transparent border crop detected."
+          : "Solid-color border crop detected."
+      );
+    });
+  }
+
+  async function processCurrentImage(updateCurrent: boolean) {
+    if (!currentImage || !converterSettings) {
+      return;
+    }
+
+    const compressionTargetBytes = normalizeCompressionTargetBytes(
+      Number(compressTargetMb) * 1024 * 1024
+    );
+
+    await runAction("process-image", async () => {
+      const response = await sendRuntimeMessage<ImageProcessResult>({
+        type: "PROCESS_CURRENT_IMAGE",
+        options: {
+          targetFormat: outputFormat,
+          crop: cropEnabled ? cropRect : null,
+          compression: compressEnabled
+            ? {
+                targetBytes: compressionTargetBytes,
+                minQuality: converterSettings.compressionMinQuality,
+                allowResize: converterSettings.compressionAllowResize
+              }
+            : null,
+          download: !updateCurrent,
+          updateCurrent
+        }
+      });
+      if (!response.ok || !response.data) {
+        throw new Error(response.error ?? "Could not process the image.");
+      }
+
+      const result = response.data;
+      const targetMessage =
+        compressEnabled && result.targetBytes
+          ? result.targetMet
+            ? ` under ${formatBytes(result.targetBytes)}`
+            : ` at ${formatBytes(result.byteLength)}, above the ${formatBytes(result.targetBytes)} target`
+          : "";
+      setStatus(
+        updateCurrent
+          ? `Processed image is now active (${formatLabel(outputFormat)}, ${formatBytes(result.byteLength)}).`
+          : `Downloaded ${formatLabel(outputFormat)}${targetMessage}.`
+      );
+    });
+  }
+
   function openOptions() {
     chrome.runtime.openOptionsPage();
   }
@@ -353,7 +491,7 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
                 <Search size={17} />
               </div>
               <div>
-                <h1 className="text-lg font-semibold leading-tight">ImageTracer</h1>
+                <h1 className="text-lg font-semibold leading-tight">ImageLab</h1>
                 <p className="text-xs text-ink-500 dark:text-slate-400">
                   Local reverse image workflow
                 </p>
@@ -374,7 +512,7 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
         {error ? <StatusNotice tone="error">{error}</StatusNotice> : null}
 
         {!settings ? (
-          <Panel className="p-5 text-sm text-ink-500">Loading ImageTracer...</Panel>
+          <Panel className="p-5 text-sm text-ink-500">Loading ImageLab...</Panel>
         ) : (
           <>
             <PrivacyStrip settings={settings} />
@@ -395,6 +533,24 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
 
             {currentImage ? (
               <>
+                <ImageProcessingPanel
+                  image={currentImage}
+                  converterSettings={converterSettings}
+                  outputFormat={outputFormat}
+                  cropEnabled={cropEnabled}
+                  cropRect={cropRect}
+                  compressEnabled={compressEnabled}
+                  compressTargetMb={compressTargetMb}
+                  busy={busy}
+                  onOutputFormatChange={setOutputFormat}
+                  onCropEnabledChange={setCropEnabled}
+                  onCropRectChange={setCropRect}
+                  onCompressEnabledChange={setCompressEnabled}
+                  onCompressTargetMbChange={setCompressTargetMb}
+                  onDetectCrop={detectCrop}
+                  onProcess={processCurrentImage}
+                />
+
                 <Panel className="p-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
@@ -530,7 +686,7 @@ function StatusNotice({ tone, children }: { tone: "success" | "error"; children:
   );
 }
 
-function PrivacyStrip({ settings }: { settings: ImageTracerSettings }) {
+function PrivacyStrip({ settings }: { settings: ImageLabSettings }) {
   return (
     <Panel className="grid gap-2 p-3 text-xs text-ink-700 dark:text-slate-300">
       <div className="flex items-start gap-2">
@@ -639,7 +795,7 @@ function CurrentImageCard({
         </div>
         <h2 className="mt-3 text-base font-semibold">No image selected</h2>
         <p className="mt-1 text-sm text-ink-500 dark:text-slate-400">
-          Right-click an image on a web page and choose ImageTracer.
+          Right-click an image on a web page and choose ImageLab.
         </p>
       </Panel>
     );
@@ -703,6 +859,451 @@ function CurrentImageCard({
   );
 }
 
+function ImageProcessingPanel({
+  image,
+  converterSettings,
+  outputFormat,
+  cropEnabled,
+  cropRect,
+  compressEnabled,
+  compressTargetMb,
+  busy,
+  onOutputFormatChange,
+  onCropEnabledChange,
+  onCropRectChange,
+  onCompressEnabledChange,
+  onCompressTargetMbChange,
+  onDetectCrop,
+  onProcess
+}: {
+  image: SelectedImage;
+  converterSettings: ConverterSettings | null;
+  outputFormat: OutputImageFormat;
+  cropEnabled: boolean;
+  cropRect: PixelCropRect | null;
+  compressEnabled: boolean;
+  compressTargetMb: string;
+  busy: BusyAction;
+  onOutputFormatChange: (format: OutputImageFormat) => void;
+  onCropEnabledChange: (enabled: boolean) => void;
+  onCropRectChange: (crop: PixelCropRect) => void;
+  onCompressEnabledChange: (enabled: boolean) => void;
+  onCompressTargetMbChange: (value: string) => void;
+  onDetectCrop: (mode: "transparent" | "solid") => void;
+  onProcess: (updateCurrent: boolean) => void;
+}) {
+  const imageSize = getImagePixelSize(image);
+  const normalizedCrop = imageSize && cropRect ? clampCropRect(cropRect, imageSize.width, imageSize.height) : null;
+  const processingBusy = busy === "process-image";
+  const cropBusy = busy === "detect-crop-transparent" || busy === "detect-crop-solid";
+
+  function resetCrop() {
+    if (!imageSize) {
+      return;
+    }
+    onCropEnabledChange(false);
+    onCropRectChange({ x: 0, y: 0, width: imageSize.width, height: imageSize.height });
+  }
+
+  function setCenteredAspectCrop(aspectRatio: number) {
+    if (!imageSize) {
+      return;
+    }
+
+    const sourceRatio = imageSize.width / imageSize.height;
+    const width = sourceRatio > aspectRatio ? Math.round(imageSize.height * aspectRatio) : imageSize.width;
+    const height = sourceRatio > aspectRatio ? imageSize.height : Math.round(imageSize.width / aspectRatio);
+    onCropEnabledChange(true);
+    onCropRectChange({
+      x: Math.round((imageSize.width - width) / 2),
+      y: Math.round((imageSize.height - height) / 2),
+      width,
+      height
+    });
+  }
+
+  return (
+    <Panel className="p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <SlidersHorizontal size={17} />
+          <h2 className="text-sm font-semibold">Process image</h2>
+        </div>
+        <Badge tone="local">Local</Badge>
+      </div>
+
+      <div className="grid gap-3">
+        <label className="grid gap-1 text-sm">
+          <span className="font-medium">Convert to</span>
+          <select
+            className="rounded-md border border-ink-100 bg-white px-3 py-2 outline-none focus:border-signal-500 focus:ring-2 focus:ring-signal-500/20 dark:border-slate-700 dark:bg-slate-950"
+            value={outputFormat}
+            onChange={(event) => onOutputFormatChange(event.target.value as OutputImageFormat)}
+          >
+            {OUTPUT_FORMATS.map((format) => (
+              <option key={format} value={format}>
+                {formatLabel(format)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="rounded-md border border-ink-100 bg-white p-3 dark:border-slate-700 dark:bg-slate-950">
+          <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 text-sm">
+            <span className="flex items-center gap-2 font-semibold">
+              <Crop size={16} />
+              Crop
+            </span>
+            <input
+              className="h-5 w-5 accent-signal-600"
+              type="checkbox"
+              checked={cropEnabled}
+              disabled={!imageSize}
+              onChange={(event) => onCropEnabledChange(event.target.checked)}
+            />
+          </label>
+
+          {imageSize && normalizedCrop ? (
+            <div className="grid gap-3">
+              <CropPreview
+                image={image}
+                sourceWidth={imageSize.width}
+                sourceHeight={imageSize.height}
+                cropRect={normalizedCrop}
+                disabled={!cropEnabled}
+                onCropRectChange={(nextCrop) => {
+                  onCropEnabledChange(true);
+                  onCropRectChange(nextCrop);
+                }}
+              />
+              <div className="grid grid-cols-4 gap-2">
+                <CropNumberField
+                  label="X"
+                  value={normalizedCrop.x}
+                  max={imageSize.width - 1}
+                  disabled={!cropEnabled}
+                  onChange={(x) =>
+                    onCropRectChange(clampCropRect({ ...normalizedCrop, x }, imageSize.width, imageSize.height))
+                  }
+                />
+                <CropNumberField
+                  label="Y"
+                  value={normalizedCrop.y}
+                  max={imageSize.height - 1}
+                  disabled={!cropEnabled}
+                  onChange={(y) =>
+                    onCropRectChange(clampCropRect({ ...normalizedCrop, y }, imageSize.width, imageSize.height))
+                  }
+                />
+                <CropNumberField
+                  label="W"
+                  value={normalizedCrop.width}
+                  max={imageSize.width}
+                  disabled={!cropEnabled}
+                  onChange={(width) =>
+                    onCropRectChange(clampCropRect({ ...normalizedCrop, width }, imageSize.width, imageSize.height))
+                  }
+                />
+                <CropNumberField
+                  label="H"
+                  value={normalizedCrop.height}
+                  max={imageSize.height}
+                  disabled={!cropEnabled}
+                  onChange={(height) =>
+                    onCropRectChange(clampCropRect({ ...normalizedCrop, height }, imageSize.width, imageSize.height))
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <button
+                  className="it-button-secondary"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => onDetectCrop("transparent")}
+                >
+                  {busy === "detect-crop-transparent" ? <Loader2 className="animate-spin" size={16} /> : <Wand2 size={16} />}
+                  Transparent
+                </button>
+                <button
+                  className="it-button-secondary"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => onDetectCrop("solid")}
+                >
+                  {busy === "detect-crop-solid" ? <Loader2 className="animate-spin" size={16} /> : <Wand2 size={16} />}
+                  Solid
+                </button>
+                <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={() => setCenteredAspectCrop(1)}>
+                  1:1
+                </button>
+                <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={resetCrop}>
+                  <RotateCcw size={16} />
+                  Reset
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={() => setCenteredAspectCrop(4 / 3)}>
+                  4:3
+                </button>
+                <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={() => setCenteredAspectCrop(16 / 9)}>
+                  16:9
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="rounded-md bg-ink-50 p-3 text-sm text-ink-500 dark:bg-slate-800 dark:text-slate-400">
+              Image dimensions are needed before manual crop controls can be shown.
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-md border border-ink-100 bg-white p-3 dark:border-slate-700 dark:bg-slate-950">
+          <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 text-sm">
+            <span className="flex items-center gap-2 font-semibold">
+              <FileArchive size={16} />
+              Compress
+            </span>
+            <input
+              className="h-5 w-5 accent-signal-600"
+              type="checkbox"
+              checked={compressEnabled}
+              onChange={(event) => onCompressEnabledChange(event.target.checked)}
+            />
+          </label>
+          <label className={`grid gap-1 text-sm ${compressEnabled ? "" : "opacity-60"}`}>
+            <span className="font-medium">Target size</span>
+            <div className="grid grid-cols-[1fr_56px] gap-2">
+              <input
+                className="rounded-md border border-ink-100 bg-white px-3 py-2 outline-none focus:border-signal-500 focus:ring-2 focus:ring-signal-500/20 disabled:cursor-not-allowed dark:border-slate-700 dark:bg-slate-950"
+                type="number"
+                min="0.05"
+                max="100"
+                step="0.1"
+                value={compressTargetMb}
+                disabled={!compressEnabled}
+                onChange={(event) => onCompressTargetMbChange(event.target.value)}
+              />
+              <span className="grid place-items-center rounded-md border border-ink-100 bg-ink-50 text-sm font-medium dark:border-slate-700 dark:bg-slate-800">
+                MB
+              </span>
+            </div>
+          </label>
+          {converterSettings ? (
+            <p className="mt-2 text-xs text-ink-500 dark:text-slate-400">
+              Uses minimum quality {converterSettings.compressionMinQuality.toFixed(2)}
+              {converterSettings.compressionAllowResize ? " and may shrink dimensions." : "."}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            className="it-button-primary"
+            type="button"
+            disabled={busy !== null || cropBusy}
+            onClick={() => onProcess(false)}
+          >
+            {processingBusy ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
+            Download result
+          </button>
+          <button
+            className="it-button-secondary"
+            type="button"
+            disabled={busy !== null || cropBusy}
+            onClick={() => onProcess(true)}
+          >
+            {processingBusy ? <Loader2 className="animate-spin" size={16} /> : <ImageIcon size={16} />}
+            Use result
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function CropPreview({
+  image,
+  sourceWidth,
+  sourceHeight,
+  cropRect,
+  disabled,
+  onCropRectChange
+}: {
+  image: SelectedImage;
+  sourceWidth: number;
+  sourceHeight: number;
+  cropRect: PixelCropRect;
+  disabled: boolean;
+  onCropRectChange: (crop: PixelCropRect) => void;
+}) {
+  type DragMode = "draw" | "move" | "nw" | "ne" | "sw" | "se";
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const [drag, setDrag] = useState<{
+    mode: DragMode;
+    startX: number;
+    startY: number;
+    startRect: PixelCropRect;
+  } | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const left = (cropRect.x / sourceWidth) * 100;
+  const top = (cropRect.y / sourceHeight) * 100;
+  const width = (cropRect.width / sourceWidth) * 100;
+  const height = (cropRect.height / sourceHeight) * 100;
+
+  useEffect(() => {
+    setPreviewFailed(false);
+  }, [image.id]);
+
+  function getPoint(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = previewRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x: 0, y: 0 };
+    }
+
+    return {
+      x: clampNumber(Math.round(((event.clientX - rect.left) / rect.width) * sourceWidth), 0, sourceWidth),
+      y: clampNumber(Math.round(((event.clientY - rect.top) / rect.height) * sourceHeight), 0, sourceHeight)
+    };
+  }
+
+  function beginDrag(event: ReactPointerEvent<HTMLDivElement>, mode: DragMode) {
+    if (disabled) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    previewRef.current?.setPointerCapture(event.pointerId);
+    const point = getPoint(event);
+    setDrag({
+      mode,
+      startX: point.x,
+      startY: point.y,
+      startRect: cropRect
+    });
+  }
+
+  function updateDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!drag || disabled) {
+      return;
+    }
+
+    const point = getPoint(event);
+    const deltaX = point.x - drag.startX;
+    const deltaY = point.y - drag.startY;
+    const start = drag.startRect;
+    let next = start;
+
+    if (drag.mode === "draw") {
+      next = {
+        x: Math.min(drag.startX, point.x),
+        y: Math.min(drag.startY, point.y),
+        width: Math.abs(point.x - drag.startX),
+        height: Math.abs(point.y - drag.startY)
+      };
+    } else if (drag.mode === "move") {
+      next = {
+        ...start,
+        x: start.x + deltaX,
+        y: start.y + deltaY
+      };
+    } else {
+      const leftEdge = drag.mode.includes("w") ? start.x + deltaX : start.x;
+      const rightEdge = drag.mode.includes("e") ? start.x + start.width + deltaX : start.x + start.width;
+      const topEdge = drag.mode.includes("n") ? start.y + deltaY : start.y;
+      const bottomEdge = drag.mode.includes("s") ? start.y + start.height + deltaY : start.y + start.height;
+      next = {
+        x: Math.min(leftEdge, rightEdge),
+        y: Math.min(topEdge, bottomEdge),
+        width: Math.abs(rightEdge - leftEdge),
+        height: Math.abs(bottomEdge - topEdge)
+      };
+    }
+
+    onCropRectChange(clampCropRect(next, sourceWidth, sourceHeight));
+  }
+
+  function endDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    if (previewRef.current?.hasPointerCapture(event.pointerId)) {
+      previewRef.current.releasePointerCapture(event.pointerId);
+    }
+    setDrag(null);
+  }
+
+  return (
+    <div
+      ref={previewRef}
+      className={`relative w-full touch-none select-none overflow-hidden rounded-md bg-ink-100 dark:bg-slate-800 ${
+        disabled ? "cursor-not-allowed" : "cursor-crosshair"
+      }`}
+      style={{ aspectRatio: `${sourceWidth} / ${sourceHeight}` }}
+      onPointerDown={(event) => beginDrag(event, "draw")}
+      onPointerMove={updateDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    >
+      {!previewFailed ? (
+        <img
+          className="h-full w-full object-fill"
+          src={image.srcUrl}
+          alt=""
+          draggable={false}
+          onError={() => setPreviewFailed(true)}
+        />
+      ) : (
+        <div className="grid h-full place-items-center text-ink-500">
+          <ImageIcon size={28} />
+        </div>
+      )}
+      <div
+        className="absolute border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"
+        style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+        onPointerDown={(event) => beginDrag(event, "move")}
+      >
+        {(["nw", "ne", "sw", "se"] as const).map((handle) => (
+          <div
+            key={handle}
+            className={`absolute h-4 w-4 rounded-full border-2 border-white bg-signal-500 ${
+              handle.includes("n") ? "-top-2" : "-bottom-2"
+            } ${handle.includes("w") ? "-left-2" : "-right-2"}`}
+            onPointerDown={(event) => beginDrag(event, handle)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CropNumberField({
+  label,
+  value,
+  max,
+  disabled,
+  onChange
+}: {
+  label: string;
+  value: number;
+  max: number;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-medium">
+      <span>{label}</span>
+      <input
+        className="min-w-0 rounded-md border border-ink-100 bg-white px-2 py-2 text-sm outline-none focus:border-signal-500 focus:ring-2 focus:ring-signal-500/20 disabled:cursor-not-allowed dark:border-slate-700 dark:bg-slate-950"
+        type="number"
+        min="0"
+        max={max}
+        step="1"
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
 function ColorList({ colors }: { colors: Array<{ hex: string; percentage: number }> }) {
   if (colors.length === 0) {
     return (
@@ -743,7 +1344,7 @@ function CloudSection({
   onAnalyze,
   onRefreshUsage
 }: {
-  settings: ImageTracerSettings;
+  settings: ImageLabSettings;
   usage: CloudUsage | null;
   results: CloudSearchResult[];
   analysis: CloudAnalysisResponse | null;
@@ -866,6 +1467,57 @@ function HistoryList({
       )}
     </Panel>
   );
+}
+
+function getImagePixelSize(image: SelectedImage | null): { width: number; height: number } | null {
+  const width = image?.analysis?.width ?? image?.width;
+  const height = image?.analysis?.height ?? image?.height;
+  if (!width || !height) {
+    return null;
+  }
+
+  return {
+    width,
+    height
+  };
+}
+
+function clampCropRect(crop: PixelCropRect, sourceWidth: number, sourceHeight: number): PixelCropRect {
+  const minSize = Math.max(1, Math.round(Math.min(sourceWidth, sourceHeight) * 0.01));
+  const width = clampNumber(Math.round(crop.width), minSize, sourceWidth);
+  const height = clampNumber(Math.round(crop.height), minSize, sourceHeight);
+  const x = clampNumber(Math.round(crop.x), 0, sourceWidth - width);
+  const y = clampNumber(Math.round(crop.y), 0, sourceHeight - height);
+
+  return { x, y, width, height };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
+  const megabytes = bytes / (1024 * 1024);
+  return `${megabytes.toLocaleString(undefined, {
+    maximumFractionDigits: megabytes >= 10 ? 0 : 1
+  })} MB`;
+}
+
+function formatMegabytesInput(bytes: number): string {
+  const megabytes = bytes / (1024 * 1024);
+  return Number(megabytes.toFixed(2)).toString();
 }
 
 function getHostname(url: string): string {

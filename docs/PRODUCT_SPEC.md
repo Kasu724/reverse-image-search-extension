@@ -1,8 +1,8 @@
-# ImageTracer Product Spec
+# ImageLab Product Spec
 
 ## Product
 
-ImageTracer is a Chromium extension for reverse image search and lightweight source investigation. The free product runs locally: it captures image context, opens user-selected search engines, analyzes metadata and dominant colors, and stores notes/history in browser storage. Cloud mode is optional and adds normalized results, saved cloud searches, batch workflows, monitoring, and AI-assisted source discovery.
+ImageLab is a Chromium extension for image conversion, reverse image search, and lightweight source investigation. The free product runs locally: it converts selected images, captures image context, opens user-selected search engines, analyzes metadata and dominant colors, and stores notes/history in browser storage. Cloud mode is optional and adds normalized results, saved cloud searches, batch workflows, monitoring, and AI-assisted source discovery.
 
 ## Personas
 
@@ -29,9 +29,11 @@ Journalist/investigator:
 ## MVP
 
 - MV3 extension with right-click image capture.
-- Page-level context menu item to open ImageTracer from normal page right-clicks.
+- Page-level context menu item to open ImageLab from normal page right-clicks.
 - Image context submenu for opening the panel, searching one engine, or searching all enabled engines.
+- Image context submenu presets for conversion, cropping helpers, and compression targets.
 - Manual image entry from a public URL or small local upload.
+- Combined local UI for crop, compression, and format conversion before download or reuse.
 - Configurable engines: Google Images, Bing Visual Search, TinEye, Yandex Images, SauceNAO.
 - Popup and extension tab with selected image, metadata, dominant colors, notes, favorites, and local history.
 - Options page for privacy mode, instant open, enabled engines, cloud mode, API URL, and API key.

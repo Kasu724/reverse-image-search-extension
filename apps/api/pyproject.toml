@@ -1,7 +1,7 @@
 [project]
-name = "imagetracer-api"
+name = "imagelab-api"
 version = "0.1.0"
-description = "FastAPI backend for ImageTracer cloud-ready features."
+description = "FastAPI backend for ImageLab cloud-ready features."
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",

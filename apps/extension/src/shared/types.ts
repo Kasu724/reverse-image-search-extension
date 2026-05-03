@@ -1,5 +1,52 @@
 export type SearchEngineId = "google" | "bing" | "tineye" | "yandex" | "saucenao";
 
+export type OutputImageFormat = "png" | "jpg" | "webp";
+
+export type AutoCropMode = "transparent" | "solid";
+
+export interface PixelCropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ImageCompressionOptions {
+  targetBytes: number;
+  minQuality?: number;
+  allowResize?: boolean;
+  maxIterations?: number;
+}
+
+export interface ImageProcessOptions {
+  targetFormat: OutputImageFormat;
+  crop?: PixelCropRect | null;
+  autoCrop?: AutoCropMode | null;
+  compression?: ImageCompressionOptions | null;
+  download?: boolean;
+  updateCurrent?: boolean;
+}
+
+export interface ImageProcessResult {
+  dataUrl: string;
+  filename: string;
+  mimeType: string;
+  byteLength: number;
+  width: number | null;
+  height: number | null;
+  sourceFormat?: string;
+  skippedRedundant?: boolean;
+  targetBytes?: number;
+  targetMet?: boolean;
+  compressionApplied?: boolean;
+}
+
+export interface DetectedCropResult {
+  crop: PixelCropRect;
+  width: number;
+  height: number;
+}
+
 export interface SearchEngineConfig {
   id: SearchEngineId;
   name: string;
@@ -55,7 +102,7 @@ export interface SearchHistoryItem {
   note?: string;
 }
 
-export interface ImageTracerSettings {
+export interface ImageLabSettings {
   enabledEngines: SearchEngineId[];
   privacyMode: boolean;
   instantOpen: boolean;
@@ -117,6 +164,8 @@ export type RuntimeRequest =
   | { type: "OPEN_SEARCH_ENGINE"; engineId: SearchEngineId }
   | { type: "OPEN_ENABLED_ENGINES" }
   | { type: "ANALYZE_CURRENT_IMAGE" }
+  | { type: "PROCESS_CURRENT_IMAGE"; options: ImageProcessOptions }
+  | { type: "DETECT_CURRENT_IMAGE_CROP"; mode: AutoCropMode; tolerance?: number }
   | { type: "GET_CURRENT_IMAGE" };
 
 export interface RuntimeResponse<T = unknown> {

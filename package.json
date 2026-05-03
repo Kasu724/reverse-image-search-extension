@@ -1,17 +1,17 @@
 {
-  "name": "imagetracer",
-  "version": "0.1.0",
+  "name": "imagelab",
+  "version": "1.0.0",
   "private": true,
-  "description": "Privacy-first reverse image search Chromium extension with optional cloud features.",
+  "description": "Combined Chromium extension for right-click image conversion and reverse image search.",
   "packageManager": "pnpm@9.15.4",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev:extension": "pnpm --filter @imagetracer/extension dev",
-    "build": "pnpm --filter @imagetracer/extension build",
-    "typecheck": "pnpm --filter @imagetracer/extension typecheck",
-    "test": "pnpm --filter @imagetracer/extension test",
+    "dev:extension": "pnpm --filter @imagelab/extension dev",
+    "build": "pnpm --filter @imagelab/extension build",
+    "typecheck": "pnpm --filter @imagelab/extension typecheck",
+    "test": "pnpm --filter @imagelab/extension test",
     "test:api": "cd apps/api && python -m pytest"
   }
 }

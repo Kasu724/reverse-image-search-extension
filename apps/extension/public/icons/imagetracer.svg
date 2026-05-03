@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ImageTracer">
-  <rect width="128" height="128" rx="24" fill="#151b26"/>
-  <path d="M24 42c0-8.8 7.2-16 16-16h48c8.8 0 16 7.2 16 16v32c0 8.8-7.2 16-16 16H40c-8.8 0-16-7.2-16-16V42Z" fill="#f7f8fb"/>
-  <path d="m34 76 17-19 13 14 9-10 21 15v2c0 2.2-1.8 4-4 4H38c-2.2 0-4-1.8-4-4v-2Z" fill="#1f9d8a"/>
-  <circle cx="83" cy="47" r="9" fill="#b9386f"/>
-  <path d="M79 83 99 103" stroke="#f7f8fb" stroke-width="10" stroke-linecap="round"/>
-  <circle cx="72" cy="76" r="18" fill="none" stroke="#f7f8fb" stroke-width="8"/>
-</svg>

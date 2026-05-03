@@ -13,10 +13,11 @@ app/routers/health.py
 app/services/analysis_service.py
 app/services/billing_service.py
 app/services/search_service.py
-imagetracer_api.egg-info/PKG-INFO
-imagetracer_api.egg-info/SOURCES.txt
-imagetracer_api.egg-info/dependency_links.txt
-imagetracer_api.egg-info/requires.txt
-imagetracer_api.egg-info/top_level.txt
+app/services/upload_service.py
+imagelab_api.egg-info/PKG-INFO
+imagelab_api.egg-info/SOURCES.txt
+imagelab_api.egg-info/dependency_links.txt
+imagelab_api.egg-info/requires.txt
+imagelab_api.egg-info/top_level.txt
 tests/test_cloud.py
 tests/test_health.py
