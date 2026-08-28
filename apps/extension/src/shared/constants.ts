@@ -19,6 +19,7 @@ export const CONTEXT_MENU_IDS = {
   convertDownloadJpg: "imagelab-convert-download-jpg",
   convertDownloadWebp: "imagelab-convert-download-webp",
   convertQuickDefault: "imagelab-convert-quick-default",
+  copyImage: "imagelab-copy-image",
   cropParent: "imagelab-crop",
   cropOpenEditor: "imagelab-crop-open-editor",
   cropAutoTransparent: "imagelab-crop-auto-transparent",
@@ -37,6 +38,10 @@ export const OFFSCREEN_DOCUMENT_PATH = "src/offscreen/offscreen.html";
 export const ERROR_PAGE_PATH = "conversion-error.html";
 
 export const CONVERT_IMAGE_MESSAGE_TYPE = "imagelab:convert-image";
+
+export const COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE = "imagelab:copy-image-to-clipboard";
+
+export const CONTEXT_IMAGE_DETECTED_MESSAGE_TYPE = "imagelab:context-image-detected";
 
 export const DETECT_CROP_MESSAGE_TYPE = "imagelab:detect-crop";
 

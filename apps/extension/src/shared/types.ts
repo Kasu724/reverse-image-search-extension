@@ -182,3 +182,8 @@ export interface ContentImageContext {
   naturalWidth?: number;
   naturalHeight?: number;
 }
+
+export interface ContentDetectedImage {
+  srcUrl: string;
+  context: ContentImageContext;
+}

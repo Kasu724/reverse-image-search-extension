@@ -24,11 +24,13 @@ const manifest: chrome.runtime.ManifestV3 = {
     {
       matches: ["http://*/*", "https://*/*"],
       js: ["content/contentScript.js"],
-      run_at: "document_idle"
+      run_at: "document_idle",
+      all_frames: true
     }
   ],
   permissions: [
     "activeTab",
+    "clipboardWrite",
     "contextMenus",
     "downloads",
     "offscreen",

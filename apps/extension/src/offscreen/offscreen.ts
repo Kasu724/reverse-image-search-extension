@@ -1,6 +1,10 @@
 import { convertImageRequest, detectCropRequest } from "../converter/imageConverter";
-import { serializeError } from "../converter/errors";
-import { CONVERT_IMAGE_MESSAGE_TYPE, DETECT_CROP_MESSAGE_TYPE } from "../shared/constants";
+import { ConversionError, serializeError } from "../converter/errors";
+import {
+  CONVERT_IMAGE_MESSAGE_TYPE,
+  COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
+  DETECT_CROP_MESSAGE_TYPE
+} from "../shared/constants";
 import { createOcrAdapter, rgbToHex } from "../shared/imageAnalysis";
 import type { DominantColor, LocalImageAnalysis } from "../shared/types";
 
@@ -19,7 +23,17 @@ interface DetectCropRequest {
   payload: unknown;
 }
 
-type OffscreenRequest = AnalyzeRequest | ConvertRequest | DetectCropRequest;
+interface CopyImageToClipboardRequest {
+  type: typeof COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE;
+  dataUrl: string;
+  mimeType?: string;
+}
+
+type OffscreenRequest =
+  | AnalyzeRequest
+  | ConvertRequest
+  | DetectCropRequest
+  | CopyImageToClipboardRequest;
 
 chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
   if (request.type === CONVERT_IMAGE_MESSAGE_TYPE) {
@@ -58,6 +72,23 @@ chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendRe
     return true;
   }
 
+  if (request.type === COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE) {
+    void copyImageToClipboard(request.dataUrl, request.mimeType)
+      .then(() =>
+        sendResponse({
+          ok: true
+        })
+      )
+      .catch((error: Error) =>
+        sendResponse({
+          ok: false,
+          error: serializeError(error)
+        })
+      );
+
+    return true;
+  }
+
   if (request.type !== "OFFSCREEN_ANALYZE_IMAGE") {
     return false;
   }
@@ -78,6 +109,143 @@ chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendRe
 
   return true;
 });
+
+async function copyImageToClipboard(dataUrl: string, mimeType = "image/png"): Promise<void> {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new ConversionError(
+      "clipboard_unavailable",
+      "This Chromium build does not expose image clipboard writes to extensions."
+    );
+  }
+
+  const supports = (ClipboardItem as typeof ClipboardItem & {
+    supports?: (type: string) => boolean;
+  }).supports;
+  if (typeof supports === "function" && !supports.call(ClipboardItem, "image/png")) {
+    throw new ConversionError(
+      "clipboard_type_unsupported",
+      "This Chromium build does not support copying PNG images to the clipboard."
+    );
+  }
+
+  const blob = dataUrlToBlob(dataUrl, mimeType);
+  const clipboardBlob = await ensurePngClipboardBlob(blob);
+
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "image/png": clipboardBlob
+      })
+    ]);
+  } catch (error) {
+    throw new ConversionError(
+      "clipboard_write_failed",
+      error instanceof Error ? error.message : "The image could not be copied to the clipboard.",
+      {
+        originalError: error instanceof Error ? error.name : String(error)
+      }
+    );
+  }
+}
+
+function dataUrlToBlob(dataUrl: string, fallbackMimeType: string): Blob {
+  const commaIndex = dataUrl.indexOf(",");
+  if (!dataUrl.startsWith("data:") || commaIndex < 0) {
+    throw new ConversionError(
+      "clipboard_data_url_invalid",
+      "The converted image data could not be read for copying."
+    );
+  }
+
+  const metadata = dataUrl.slice(5, commaIndex);
+  const payload = dataUrl.slice(commaIndex + 1);
+  const metadataParts = metadata
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const isBase64 = metadataParts.some((part) => part.toLowerCase() === "base64");
+  const mediaType =
+    metadataParts.find((part) => part.includes("/")) || fallbackMimeType || "image/png";
+  const bytes = isBase64 ? base64ToBytes(payload) : urlEncodedPayloadToBytes(payload);
+
+  return new Blob([bytesToArrayBuffer(bytes)], { type: normalizeMimeType(mediaType) });
+}
+
+function base64ToBytes(payload: string): Uint8Array {
+  try {
+    const binary = atob(payload.replace(/\s/g, ""));
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    return bytes;
+  } catch (error) {
+    throw new ConversionError(
+      "clipboard_data_url_decode_failed",
+      "The converted image data could not be decoded for copying.",
+      {
+        originalError: error instanceof Error ? error.message : String(error)
+      }
+    );
+  }
+}
+
+function urlEncodedPayloadToBytes(payload: string): Uint8Array {
+  try {
+    return new TextEncoder().encode(decodeURIComponent(payload));
+  } catch (error) {
+    throw new ConversionError(
+      "clipboard_data_url_decode_failed",
+      "The converted image data could not be decoded for copying.",
+      {
+        originalError: error instanceof Error ? error.message : String(error)
+      }
+    );
+  }
+}
+
+async function ensurePngClipboardBlob(blob: Blob): Promise<Blob> {
+  if (normalizeMimeType(blob.type) === "image/png") {
+    return blob;
+  }
+
+  let bitmap: ImageBitmap | null = null;
+
+  try {
+    bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Could not create a canvas context for clipboard image encoding.");
+    }
+
+    context.drawImage(bitmap, 0, 0);
+    return canvas.convertToBlob({ type: "image/png" });
+  } catch (error) {
+    throw new ConversionError(
+      "clipboard_encode_failed",
+      "The image could not be encoded for the clipboard.",
+      {
+        originalError: error instanceof Error ? error.message : String(error)
+      }
+    );
+  } finally {
+    bitmap?.close();
+  }
+}
+
+function normalizeMimeType(mimeType: string): string {
+  return mimeType.split(";", 1)[0]?.trim().toLowerCase() || "image/png";
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
 
 async function analyzeImage(srcUrl: string): Promise<LocalImageAnalysis> {
   const image = await loadImage(srcUrl);

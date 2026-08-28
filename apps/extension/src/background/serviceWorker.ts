@@ -14,6 +14,8 @@ import { isBlobUrl, isDataUrl, isHttpUrl, truncateForDisplay } from "../converte
 import { uploadImageForSearch } from "../shared/cloudClient";
 import {
   CONVERT_IMAGE_MESSAGE_TYPE,
+  COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
+  CONTEXT_IMAGE_DETECTED_MESSAGE_TYPE,
   DETECT_CROP_MESSAGE_TYPE,
   ERROR_PAGE_PATH,
   OFFSCREEN_DOCUMENT_PATH
@@ -28,6 +30,7 @@ import {
 } from "../shared/storage";
 import { createSelectedImage, imageNeedsUploadProxy } from "../shared/imageMetadata";
 import type {
+  ContentDetectedImage,
   ContentImageContext,
   DetectedCropResult,
   ImageProcessOptions,
@@ -62,6 +65,11 @@ type ConvertOffscreenResponse = {
   error?: unknown;
 };
 
+type SuccessfulConvertOffscreenResponse = ConvertOffscreenResponse & {
+  dataUrl: string;
+  filename: string;
+};
+
 type DetectCropOffscreenResponse = {
   ok: boolean;
   crop?: DetectedCropResult["crop"];
@@ -69,6 +77,53 @@ type DetectCropOffscreenResponse = {
   height?: number;
   error?: unknown;
 };
+
+type CopyOffscreenResponse = {
+  ok: boolean;
+  error?: unknown;
+};
+
+type ResolvedContextImage = {
+  srcUrl: string;
+  pageUrl?: string;
+  context: ContentImageContext | null;
+  sourceDataUrl?: string;
+  sourceMimeType?: string;
+  sourceByteLength?: number;
+  viewportRect?: ViewportRect;
+};
+
+type ContextImageProcessOptions = Partial<ImageProcessOptions> & {
+  targetFormat: OutputImageFormat;
+  preserveSourceDimensions?: boolean;
+};
+
+type ContextImageDetectedRequest = {
+  type: typeof CONTEXT_IMAGE_DETECTED_MESSAGE_TYPE;
+  image?: ContentDetectedImage;
+};
+
+type CachedContextImage = ResolvedContextImage & {
+  tabId: number;
+  frameId?: number;
+  capturedAt: number;
+};
+
+type ScriptDetectedContextImage = ResolvedContextImage & {
+  score?: number;
+};
+
+type ViewportRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+};
+
+const CACHED_CONTEXT_IMAGE_MAX_AGE_MS = 90_000;
+const cachedContextImages = new Map<string, CachedContextImage>();
 
 void registerContextMenus();
 
@@ -92,7 +147,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((request: RuntimeRequest, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request: unknown, sender, sendResponse) => {
+  if (isContextImageDetectedRequest(request)) {
+    cacheContextImage(request.image, sender);
+    sendResponse({ ok: true } satisfies RuntimeResponse);
+    return false;
+  }
+
   if (!isRuntimeRequest(request)) {
     return false;
   }
@@ -124,6 +185,14 @@ function isRuntimeRequest(value: unknown): value is RuntimeRequest {
   );
 }
 
+function isContextImageDetectedRequest(value: unknown): value is ContextImageDetectedRequest {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { type?: unknown }).type === CONTEXT_IMAGE_DETECTED_MESSAGE_TYPE
+  );
+}
+
 async function handleImageContextClick(
   info: chrome.contextMenus.OnClickData,
   tab: chrome.tabs.Tab | undefined,
@@ -131,6 +200,11 @@ async function handleImageContextClick(
 ): Promise<void> {
   if (action.type === "convert" || action.type === "convert-default") {
     await handleImageConversionContextClick(info, tab, action);
+    return;
+  }
+
+  if (action.type === "copy") {
+    await handleImageCopyContextClick(info, tab);
     return;
   }
 
@@ -193,8 +267,49 @@ async function handleImageConversionContextClick(
   } catch (error) {
     console.error("ImageLab image conversion failed.", error);
     await openConversionErrorPage(error, {
-      sourceUrl: info.srcUrl || "",
+      sourceUrl: info.srcUrl || info.linkUrl || "",
       targetLabel
+    });
+  }
+}
+
+async function handleImageCopyContextClick(
+  info: chrome.contextMenus.OnClickData,
+  tab: chrome.tabs.Tab | undefined
+): Promise<void> {
+  try {
+    const response = await processImageFromContext(info, tab, {
+      targetFormat: "png",
+      preserveSourceDimensions: true
+    });
+
+    if (!response.dataUrl) {
+      throw new ConversionError(
+        "copy_failed",
+        "The selected image could not be prepared for the clipboard."
+      );
+    }
+
+    await ensureOffscreenDocument();
+    const copyResponse = await sendRuntimeMessage<CopyOffscreenResponse>({
+      type: COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
+      dataUrl: response.dataUrl,
+      mimeType: response.mimeType || "image/png"
+    });
+
+    if (!copyResponse.ok) {
+      throw errorFromPayload(copyResponse.error);
+    }
+
+    const image = await captureImageFromContext(info, tab);
+    if (image) {
+      void analyzeAndStore(image);
+    }
+  } catch (error) {
+    console.error("ImageLab image copy failed.", error);
+    await openConversionErrorPage(error, {
+      sourceUrl: info.srcUrl || info.linkUrl || "",
+      targetLabel: "Copy image"
     });
   }
 }
@@ -241,13 +356,6 @@ async function convertAndDownloadImage(
   tab: chrome.tabs.Tab | undefined,
   action: Extract<ImageContextMenuAction, { type: "convert" | "convert-default" }>
 ): Promise<void> {
-  if (!info.srcUrl) {
-    throw new ConversionError(
-      "missing_image_url",
-      "This image does not expose a usable URL to the extension."
-    );
-  }
-
   const settings = await readConverterSettings();
   const targetFormat = action.type === "convert-default" ? settings.defaultFormat : action.format;
 
@@ -259,30 +367,10 @@ async function convertAndDownloadImage(
 async function processAndDownloadImage(
   info: chrome.contextMenus.OnClickData,
   tab: chrome.tabs.Tab | undefined,
-  options: Partial<ImageProcessOptions> & { targetFormat: OutputImageFormat }
-): Promise<ConvertOffscreenResponse> {
+  options: ContextImageProcessOptions
+): Promise<SuccessfulConvertOffscreenResponse> {
+  const response = await processImageFromContext(info, tab, options);
   const settings = await readConverterSettings();
-  const sourcePayload = await buildConversionSourcePayload(info, tab);
-
-  await ensureOffscreenDocument();
-
-  const response = await sendRuntimeMessage<ConvertOffscreenResponse>({
-    type: CONVERT_IMAGE_MESSAGE_TYPE,
-    payload: {
-      ...sourcePayload,
-      pageUrl: info.pageUrl || tab?.url || "",
-      frameUrl: info.frameUrl || "",
-      targetFormat: options.targetFormat,
-      crop: options.crop ?? null,
-      autoCrop: options.autoCrop ?? null,
-      compression: options.compression ?? null,
-      settings
-    }
-  });
-
-  if (!response.ok || !response.dataUrl || !response.filename) {
-    throw errorFromPayload(response.error);
-  }
 
   const downloadId = await chrome.downloads.download({
     url: response.dataUrl,
@@ -301,6 +389,45 @@ async function processAndDownloadImage(
   return response;
 }
 
+async function processImageFromContext(
+  info: chrome.contextMenus.OnClickData,
+  tab: chrome.tabs.Tab | undefined,
+  options: ContextImageProcessOptions
+): Promise<SuccessfulConvertOffscreenResponse> {
+  const settings = await readConverterSettings();
+  const effectiveSettings = options.preserveSourceDimensions
+    ? {
+        ...settings,
+        preserveDimensions: true,
+        resizeWidth: null,
+        resizeHeight: null
+      }
+    : settings;
+  const sourcePayload = await buildConversionSourcePayload(info, tab);
+
+  await ensureOffscreenDocument();
+
+  const response = await sendRuntimeMessage<ConvertOffscreenResponse>({
+    type: CONVERT_IMAGE_MESSAGE_TYPE,
+    payload: {
+      ...sourcePayload,
+      pageUrl: info.pageUrl || tab?.url || "",
+      frameUrl: info.frameUrl || "",
+      targetFormat: options.targetFormat,
+      crop: options.crop ?? null,
+      autoCrop: options.autoCrop ?? null,
+      compression: options.compression ?? null,
+      settings: effectiveSettings
+    }
+  });
+
+  if (!response.ok || !response.dataUrl || !response.filename) {
+    throw errorFromPayload(response.error);
+  }
+
+  return response as SuccessfulConvertOffscreenResponse;
+}
+
 function getConversionTargetLabel(
   action: Extract<ImageContextMenuAction, { type: "convert" | "convert-default" }>
 ): string {
@@ -315,13 +442,23 @@ async function buildConversionSourcePayload(
   info: chrome.contextMenus.OnClickData,
   tab?: chrome.tabs.Tab
 ): Promise<Record<string, unknown>> {
-  const sourceUrl = info.srcUrl;
+  const source = await resolveContextImage(info, tab);
+  const sourceUrl = source?.srcUrl;
 
   if (!sourceUrl) {
     throw new ConversionError(
       "missing_image_url",
-      "The selected image does not have a usable URL."
+      "No image was detected under the right-click point."
     );
+  }
+
+  if (source.sourceDataUrl) {
+    return {
+      sourceUrl,
+      sourceDataUrl: source.sourceDataUrl,
+      sourceMimeType: source.sourceMimeType || "image/png",
+      sourceByteLength: source.sourceByteLength || 0
+    };
   }
 
   if (isDataUrl(sourceUrl)) {
@@ -339,6 +476,18 @@ async function buildConversionSourcePayload(
   }
 
   if (isHttpUrl(sourceUrl)) {
+    if (isLikelyProtectedImageUrl(sourceUrl)) {
+      const visibleCapture = await captureVisibleContextImage(source, tab);
+      if (visibleCapture) {
+        return {
+          sourceUrl,
+          sourceDataUrl: visibleCapture.dataUrl,
+          sourceMimeType: "image/png",
+          sourceByteLength: visibleCapture.byteLength
+        };
+      }
+    }
+
     return { sourceUrl };
   }
 
@@ -403,22 +552,757 @@ async function fetchBlobUrlFromPage(
   return result;
 }
 
+function isLikelyProtectedImageUrl(sourceUrl: string): boolean {
+  try {
+    const hostname = new URL(sourceUrl).hostname.toLowerCase();
+    return (
+      hostname.endsWith("instagram.com") ||
+      hostname.endsWith("cdninstagram.com") ||
+      hostname.endsWith("fbcdn.net") ||
+      hostname.includes("scontent")
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function captureVisibleContextImage(
+  source: ResolvedContextImage,
+  tab?: chrome.tabs.Tab
+): Promise<{ dataUrl: string; byteLength: number } | null> {
+  const tabId = tab?.id;
+  const windowId = tab?.windowId;
+  if (!Number.isInteger(tabId) || !Number.isInteger(windowId) || !source.viewportRect) {
+    return null;
+  }
+
+  try {
+    const screenshot = await captureVisibleTabDataUrl(windowId as number);
+    const cropped = await cropDataUrlToViewportRect(screenshot, source.viewportRect);
+    return {
+      dataUrl: cropped,
+      byteLength: dataUrlByteLength(cropped)
+    };
+  } catch (error) {
+    console.warn("ImageLab visible image capture failed.", error);
+    return null;
+  }
+}
+
+function captureVisibleTabDataUrl(windowId: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      if (!dataUrl) {
+        reject(new Error("Chrome did not return a tab capture."));
+        return;
+      }
+
+      resolve(dataUrl);
+    });
+  });
+}
+
+async function cropDataUrlToViewportRect(dataUrl: string, rect: ViewportRect): Promise<string> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  try {
+    const scaleX = bitmap.width / Math.max(1, rect.viewportWidth);
+    const scaleY = bitmap.height / Math.max(1, rect.viewportHeight);
+    const sx = clampNumber(Math.round(rect.left * scaleX), 0, Math.max(0, bitmap.width - 1));
+    const sy = clampNumber(Math.round(rect.top * scaleY), 0, Math.max(0, bitmap.height - 1));
+    const sw = clampNumber(Math.round(rect.width * scaleX), 1, bitmap.width - sx);
+    const sh = clampNumber(Math.round(rect.height * scaleY), 1, bitmap.height - sy);
+    const canvas = new OffscreenCanvas(sw, sh);
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Could not create a canvas context for visible image capture.");
+    }
+
+    context.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+    const outputBlob = await canvas.convertToBlob({ type: "image/png" });
+    return blobToDataUrl(outputBlob);
+  } finally {
+    if (typeof bitmap.close === "function") {
+      bitmap.close();
+    }
+  }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
+  }
+
+  return `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
+}
+
+function dataUrlByteLength(dataUrl: string): number {
+  const encoded = dataUrl.split(",", 2)[1] || "";
+  return Math.floor((encoded.length * 3) / 4);
+}
+
+function cacheContextImage(
+  image: ContentDetectedImage | undefined,
+  sender: chrome.runtime.MessageSender
+): void {
+  const tabId = sender.tab?.id;
+  if (!Number.isInteger(tabId) || !image?.srcUrl) {
+    return;
+  }
+
+  pruneCachedContextImages();
+
+  const frameId = Number.isInteger(sender.frameId) ? sender.frameId : undefined;
+  cachedContextImages.set(contextImageCacheKey(tabId as number, frameId), {
+    tabId: tabId as number,
+    frameId,
+    srcUrl: image.srcUrl,
+    pageUrl: sender.url || sender.tab?.url,
+    context: image.context,
+    capturedAt: Date.now()
+  });
+}
+
+function getCachedContextImage(
+  tabId: number,
+  frameId?: number
+): ResolvedContextImage | null {
+  pruneCachedContextImages();
+
+  const exact = cachedContextImages.get(contextImageCacheKey(tabId, frameId));
+  if (exact) {
+    return exact;
+  }
+
+  let newest: CachedContextImage | null = null;
+  for (const cached of cachedContextImages.values()) {
+    if (cached.tabId !== tabId) {
+      continue;
+    }
+
+    if (!newest || cached.capturedAt > newest.capturedAt) {
+      newest = cached;
+    }
+  }
+
+  return newest;
+}
+
+function pruneCachedContextImages(): void {
+  const cutoff = Date.now() - CACHED_CONTEXT_IMAGE_MAX_AGE_MS;
+  for (const [key, cached] of cachedContextImages) {
+    if (cached.capturedAt < cutoff) {
+      cachedContextImages.delete(key);
+    }
+  }
+}
+
+function contextImageCacheKey(tabId: number, frameId?: number): string {
+  return `${tabId}:${Number.isInteger(frameId) ? frameId : "latest"}`;
+}
+
+async function detectContextImageWithScripting(
+  info: chrome.contextMenus.OnClickData,
+  tab?: chrome.tabs.Tab
+): Promise<ResolvedContextImage | null> {
+  const tabId = tab?.id;
+  if (!Number.isInteger(tabId)) {
+    return null;
+  }
+
+  const target: chrome.scripting.InjectionTarget =
+    Number.isInteger(info.frameId) && (info.frameId ?? -1) >= 0
+      ? { tabId: tabId as number, frameIds: [info.frameId as number] }
+      : { tabId: tabId as number, allFrames: true };
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target,
+      func: detectContextImageInPage
+    });
+
+    const candidates = results
+      .map((result) => result.result)
+      .filter((result): result is ScriptDetectedContextImage =>
+        Boolean(result?.srcUrl)
+      )
+      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+
+    const candidate = candidates[0];
+    if (!candidate) {
+      return null;
+    }
+
+    return {
+      srcUrl: candidate.srcUrl,
+      pageUrl: candidate.pageUrl,
+      context: candidate.context
+    };
+  } catch (error) {
+    console.warn("ImageLab scripted image detection failed.", error);
+    return null;
+  }
+}
+
+function detectContextImageInPage(): ScriptDetectedContextImage | null {
+  const LAST_CONTEXT_POINT_KEY = "__imagelabLastContextPoint";
+  const MAX_POINT_AGE_MS = 120_000;
+  const MIN_EDGE = 24;
+  const MEDIA_SELECTOR = "img, picture img, canvas, svg image, video";
+  const IMAGE_URL_ATTRIBUTES = [
+    "src",
+    "poster",
+    "data-src",
+    "data-original",
+    "data-lazy-src",
+    "data-image",
+    "data-image-url",
+    "data-full-src"
+  ];
+
+  const viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+  const viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+  const viewportArea = Math.max(1, viewportWidth * viewportHeight);
+  const isInstagram = /(^|\.)instagram\.com$/i.test(location.hostname);
+
+  function getLastContextPoint(): { clientX: number; clientY: number } | null {
+    const value = (window as Window & {
+      [LAST_CONTEXT_POINT_KEY]?: { clientX?: unknown; clientY?: unknown; capturedAt?: unknown };
+    })[LAST_CONTEXT_POINT_KEY];
+
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const clientX = Number(value.clientX);
+    const clientY = Number(value.clientY);
+    const capturedAt = Number(value.capturedAt);
+    if (
+      !Number.isFinite(clientX) ||
+      !Number.isFinite(clientY) ||
+      !Number.isFinite(capturedAt) ||
+      Date.now() - capturedAt > MAX_POINT_AGE_MS
+    ) {
+      return null;
+    }
+
+    return { clientX, clientY };
+  }
+
+  function normalizeUrl(value: string): string {
+    try {
+      return new URL(value, document.baseURI).href;
+    } catch {
+      return value;
+    }
+  }
+
+  function isUsableImageUrl(value: string): boolean {
+    if (!value) {
+      return false;
+    }
+
+    const lower = value.toLowerCase();
+    return (
+      lower.startsWith("http://") ||
+      lower.startsWith("https://") ||
+      lower.startsWith("blob:") ||
+      lower.startsWith("file:") ||
+      lower.startsWith("data:image/")
+    );
+  }
+
+  function rectVisibleArea(rect: DOMRect): number {
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(viewportWidth, rect.right);
+    const bottom = Math.min(viewportHeight, rect.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top);
+  }
+
+  function rectContainsPoint(rect: DOMRect, clientX: number, clientY: number, tolerance = 0): boolean {
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      clientX >= rect.left - tolerance &&
+      clientX <= rect.right + tolerance &&
+      clientY >= rect.top - tolerance &&
+      clientY <= rect.bottom + tolerance
+    );
+  }
+
+  function isElementVisible(element: Element): boolean {
+    const rect = element.getBoundingClientRect();
+    if (rect.width < MIN_EDGE || rect.height < MIN_EDGE || rectVisibleArea(rect) <= 0) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  }
+
+  function firstUrlFromCssImage(value: string): string | null {
+    const urlPattern = /url\((?:"([^"]+)"|'([^']+)'|([^)"']+))\)/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = urlPattern.exec(value))) {
+      const url = normalizeUrl(String(match[1] || match[2] || match[3] || "").trim());
+      if (isUsableImageUrl(url)) {
+        return url;
+      }
+    }
+
+    return null;
+  }
+
+  function bestSrcFromSrcset(srcset: string): string | null {
+    const candidates = srcset
+      .split(",")
+      .map((candidate) => {
+        const [url, descriptor] = candidate.trim().split(/\s+/, 2);
+        const score =
+          descriptor?.endsWith("x") || descriptor?.endsWith("w")
+            ? Number(descriptor.slice(0, -1))
+            : 1;
+
+        return {
+          url: normalizeUrl(url || ""),
+          score: Number.isFinite(score) ? score : 1
+        };
+      })
+      .filter((candidate) => isUsableImageUrl(candidate.url));
+
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0]?.url ?? null;
+  }
+
+  function getImageUrlFromAttributes(element: Element): string | null {
+    for (const attribute of IMAGE_URL_ATTRIBUTES) {
+      const value = element.getAttribute(attribute);
+      if (!value) {
+        continue;
+      }
+
+      const normalized = normalizeUrl(value);
+      if (isUsableImageUrl(normalized)) {
+        return normalized;
+      }
+    }
+
+    return bestSrcFromSrcset(element.getAttribute("srcset") || element.getAttribute("data-srcset") || "");
+  }
+
+  function getMediaSource(element: Element): string | null {
+    if (element instanceof HTMLImageElement) {
+      return normalizeUrl(
+        element.currentSrc ||
+          element.src ||
+          bestSrcFromSrcset(element.getAttribute("srcset") || "") ||
+          getImageUrlFromAttributes(element) ||
+          ""
+      );
+    }
+
+    if (element instanceof HTMLVideoElement) {
+      const poster = normalizeUrl(element.poster || element.getAttribute("poster") || "");
+      return isUsableImageUrl(poster) ? poster : null;
+    }
+
+    if (element instanceof HTMLCanvasElement) {
+      try {
+        return element.toDataURL("image/png");
+      } catch {
+        return null;
+      }
+    }
+
+    if (typeof SVGImageElement !== "undefined" && element instanceof SVGImageElement) {
+      return normalizeUrl(
+        element.href.baseVal ||
+          element.getAttribute("href") ||
+          element.getAttribute("xlink:href") ||
+          ""
+      );
+    }
+
+    return getImageUrlFromAttributes(element);
+  }
+
+  function getElementLabel(element: Element): string {
+    return [
+      element.getAttribute("alt"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("class")
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function buildContext(element: Element): ContentImageContext {
+    const rect = element.getBoundingClientRect();
+    const label = getElementLabel(element);
+    const title =
+      element.getAttribute("title") ||
+      element.getAttribute("aria-label") ||
+      element.getAttribute("alt") ||
+      undefined;
+
+    if (element instanceof HTMLImageElement) {
+      return {
+        altText: element.alt || undefined,
+        title,
+        width: Math.round(element.naturalWidth || element.width || rect.width) || undefined,
+        height: Math.round(element.naturalHeight || element.height || rect.height) || undefined,
+        naturalWidth: Math.round(element.naturalWidth || rect.width) || undefined,
+        naturalHeight: Math.round(element.naturalHeight || rect.height) || undefined
+      };
+    }
+
+    if (element instanceof HTMLCanvasElement) {
+      return {
+        altText: label || undefined,
+        title,
+        width: element.width || Math.round(rect.width) || undefined,
+        height: element.height || Math.round(rect.height) || undefined,
+        naturalWidth: element.width || Math.round(rect.width) || undefined,
+        naturalHeight: element.height || Math.round(rect.height) || undefined
+      };
+    }
+
+    return {
+      altText: label || undefined,
+      title,
+      width: Math.round(rect.width) || undefined,
+      height: Math.round(rect.height) || undefined,
+      naturalWidth: Math.round(rect.width) || undefined,
+      naturalHeight: Math.round(rect.height) || undefined
+    };
+  }
+
+  function viewportRectFromElement(element: Element): ViewportRect {
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(0, Math.min(viewportWidth, rect.left));
+    const top = Math.max(0, Math.min(viewportHeight, rect.top));
+    const right = Math.max(left + 1, Math.min(viewportWidth, rect.right));
+    const bottom = Math.max(top + 1, Math.min(viewportHeight, rect.bottom));
+
+    return {
+      left,
+      top,
+      width: right - left,
+      height: bottom - top,
+      viewportWidth,
+      viewportHeight
+    };
+  }
+
+  function dataUrlByteLength(dataUrl: string): number {
+    const encoded = dataUrl.split(",", 2)[1] || "";
+    return Math.floor((encoded.length * 3) / 4);
+  }
+
+  function renderElementToDataUrl(element: Element): string | null {
+    try {
+      if (element instanceof HTMLCanvasElement) {
+        return element.toDataURL("image/png");
+      }
+
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (!context) {
+        return null;
+      }
+
+      if (element instanceof HTMLImageElement) {
+        const width = element.naturalWidth || element.width;
+        const height = element.naturalHeight || element.height;
+        if (!width || !height) {
+          return null;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        context.drawImage(element, 0, 0, width, height);
+        return canvas.toDataURL("image/png");
+      }
+
+      if (element instanceof HTMLVideoElement && element.readyState >= 2) {
+        const width = element.videoWidth || Math.round(element.getBoundingClientRect().width);
+        const height = element.videoHeight || Math.round(element.getBoundingClientRect().height);
+        if (!width || !height) {
+          return null;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        context.drawImage(element, 0, 0, width, height);
+        return canvas.toDataURL("image/png");
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  function scoreElement(element: Element, sourceUrl: string, pointHit: boolean): number {
+    const rect = element.getBoundingClientRect();
+    const visibleArea = rectVisibleArea(rect);
+    const label = getElementLabel(element);
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const viewportCenterDistance = Math.hypot(centerX - viewportWidth / 2, centerY - viewportHeight / 2);
+    const centerBonus = Math.max(0, 1000 - viewportCenterDistance);
+    const lowerUrl = sourceUrl.toLowerCase();
+    let score = visibleArea + centerBonus;
+
+    if (pointHit) {
+      score += viewportArea * 2;
+    }
+    if (element.closest("article")) {
+      score += viewportArea * 0.75;
+    }
+    if (element.closest('[role="dialog"], main')) {
+      score += viewportArea * 0.25;
+    }
+    if (isInstagram && /scontent|cdninstagram|fbcdn/.test(lowerUrl)) {
+      score += viewportArea;
+    }
+    if (label.includes("profile") || label.includes("avatar")) {
+      score -= viewportArea * 2;
+    }
+    if (rect.width < 80 || rect.height < 80) {
+      score -= viewportArea;
+    }
+
+    return score;
+  }
+
+  function detectedFromElement(
+    element: Element,
+    sourceUrl: string | null,
+    pointHit = false
+  ): ScriptDetectedContextImage | null {
+    const normalized = normalizeUrl(sourceUrl || "");
+    if (!isUsableImageUrl(normalized) || !isElementVisible(element)) {
+      return null;
+    }
+
+    const sourceDataUrl = renderElementToDataUrl(element) || undefined;
+
+    return {
+      srcUrl: normalized,
+      pageUrl: location.href,
+      context: buildContext(element),
+      sourceDataUrl,
+      sourceMimeType: sourceDataUrl ? "image/png" : undefined,
+      sourceByteLength: sourceDataUrl ? dataUrlByteLength(sourceDataUrl) : undefined,
+      viewportRect: viewportRectFromElement(element),
+      score: scoreElement(element, normalized, pointHit)
+    };
+  }
+
+  function detectBackgroundImage(element: Element, pointHit = false): ScriptDetectedContextImage | null {
+    if (!isElementVisible(element)) {
+      return null;
+    }
+
+    const sourceUrl = firstUrlFromCssImage(window.getComputedStyle(element).backgroundImage);
+    return detectedFromElement(element, sourceUrl, pointHit);
+  }
+
+  function detectAtPoint(point: { clientX: number; clientY: number }): ScriptDetectedContextImage | null {
+    const candidates: ScriptDetectedContextImage[] = [];
+    const seen = new Set<Element>();
+    const addElement = (element: Element | null) => {
+      let current: Element | null = element;
+      let depth = 0;
+      while (current && depth < 8) {
+        if (!seen.has(current)) {
+          seen.add(current);
+          const rect = current.getBoundingClientRect();
+          const direct =
+            rectContainsPoint(rect, point.clientX, point.clientY, 4)
+              ? detectedFromElement(current, getMediaSource(current), true) ??
+                detectBackgroundImage(current, true)
+              : null;
+          if (direct) {
+            candidates.push(direct);
+          }
+        }
+        current = current.parentElement;
+        depth += 1;
+      }
+    };
+
+    for (const element of document.elementsFromPoint(point.clientX, point.clientY)) {
+      addElement(element);
+    }
+
+    for (const element of Array.from(document.querySelectorAll(MEDIA_SELECTOR))) {
+      if (rectContainsPoint(element.getBoundingClientRect(), point.clientX, point.clientY, 4)) {
+        addElement(element);
+      }
+    }
+
+    candidates.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+    return candidates[0] ?? null;
+  }
+
+  function detectVisibleMedia(): ScriptDetectedContextImage | null {
+    const candidates: ScriptDetectedContextImage[] = [];
+
+    for (const element of Array.from(document.querySelectorAll(MEDIA_SELECTOR))) {
+      const candidate = detectedFromElement(element, getMediaSource(element), false);
+      if (candidate) {
+        candidates.push(candidate);
+      }
+    }
+
+    for (const element of Array.from(document.body?.querySelectorAll("*") ?? [])) {
+      const candidate = detectBackgroundImage(element, false);
+      if (candidate) {
+        candidates.push(candidate);
+      }
+    }
+
+    candidates.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+    return candidates[0] ?? null;
+  }
+
+  function detectMetaImage(): ScriptDetectedContextImage | null {
+    if (!isInstagram || !/\/(p|reel|reels|tv)\//i.test(location.pathname)) {
+      return null;
+    }
+
+    const content =
+      document
+        .querySelector<HTMLMetaElement>(
+          'meta[property="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]'
+        )
+        ?.content?.trim() || "";
+    const sourceUrl = normalizeUrl(content);
+    if (!isUsableImageUrl(sourceUrl)) {
+      return null;
+    }
+
+    return {
+      srcUrl: sourceUrl,
+      pageUrl: location.href,
+      context: {
+        title: document.title || undefined
+      },
+      score: viewportArea * 4
+    };
+  }
+
+  const point = getLastContextPoint();
+  return (point ? detectAtPoint(point) : null) ?? detectVisibleMedia() ?? detectMetaImage();
+}
+
+async function resolveContextImage(
+  info: chrome.contextMenus.OnClickData,
+  tab?: chrome.tabs.Tab
+): Promise<ResolvedContextImage | null> {
+  const pageUrl = info.pageUrl ?? tab?.url;
+  const frameOptions = getFrameMessageOptions(info);
+
+  if (info.srcUrl) {
+    const context = tab?.id
+      ? await sendTabMessage<ContentImageContext>(
+          tab.id,
+          {
+            type: "GET_IMAGE_CONTEXT",
+            srcUrl: info.srcUrl
+          },
+          frameOptions
+        )
+      : null;
+    const scripted =
+      isLikelyProtectedImageUrl(info.srcUrl) && tab?.id
+        ? await detectContextImageWithScripting(info, tab)
+        : null;
+
+    if (scripted?.sourceDataUrl || scripted?.viewportRect) {
+      return {
+        ...scripted,
+        srcUrl: scripted.srcUrl || info.srcUrl,
+        pageUrl: pageUrl ?? scripted.pageUrl,
+        context: scripted.context ?? context
+      };
+    }
+
+    return {
+      srcUrl: info.srcUrl,
+      pageUrl,
+      context
+    };
+  }
+
+  if (!tab?.id) {
+    return null;
+  }
+
+  const detected = await sendTabMessage<ContentDetectedImage>(
+    tab.id,
+    {
+      type: "GET_CONTEXT_IMAGE"
+    },
+    frameOptions
+  );
+
+  const scripted = await detectContextImageWithScripting(info, tab);
+  const cached = getCachedContextImage(
+    tab.id,
+    Number.isInteger(info.frameId) ? (info.frameId as number) : undefined
+  );
+  const fallback =
+    scripted?.sourceDataUrl || scripted?.viewportRect
+      ? scripted
+      : detected?.srcUrl
+        ? detected
+        : scripted ?? cached;
+
+  if (!fallback?.srcUrl) {
+    return null;
+  }
+
+  const fallbackPageUrl = "pageUrl" in fallback ? fallback.pageUrl : undefined;
+
+  return {
+    srcUrl: fallback.srcUrl,
+    pageUrl: pageUrl ?? fallbackPageUrl,
+    context: fallback.context
+  };
+}
+
 async function captureImageFromContext(
   info: chrome.contextMenus.OnClickData,
   tab?: chrome.tabs.Tab
 ): Promise<SelectedImage | null> {
-  if (!info.srcUrl) {
+  const resolved = await resolveContextImage(info, tab);
+  if (!resolved) {
     return null;
   }
 
-  const context = tab?.id
-    ? await sendTabMessage<ContentImageContext>(tab.id, {
-        type: "GET_IMAGE_CONTEXT",
-        srcUrl: info.srcUrl
-      })
-    : null;
-
-  const image = createSelectedImage(info.srcUrl, info.pageUrl ?? tab?.url, context);
+  const image = createSelectedImage(resolved.srcUrl, resolved.pageUrl, resolved.context);
   await setCurrentImage(image);
   await upsertHistoryEntry(image);
   return image;
@@ -733,14 +1617,28 @@ async function ensureOffscreenDocument(): Promise<void> {
 
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_DOCUMENT_PATH,
-    reasons: ["BLOBS", "DOM_PARSER"] as chrome.offscreen.Reason[],
-    justification: "Analyze and convert selected images locally using canvas APIs."
+    reasons: ["BLOBS", "DOM_PARSER", "CLIPBOARD"] as chrome.offscreen.Reason[],
+    justification: "Analyze, convert, and copy selected images locally using browser APIs."
   });
 }
 
-function sendTabMessage<T>(tabId: number, message: unknown): Promise<T | null> {
+function getFrameMessageOptions(
+  info: chrome.contextMenus.OnClickData
+): chrome.tabs.MessageSendOptions | undefined {
+  if (Number.isInteger(info.frameId) && (info.frameId ?? -1) >= 0) {
+    return { frameId: info.frameId as number };
+  }
+
+  return undefined;
+}
+
+function sendTabMessage<T>(
+  tabId: number,
+  message: unknown,
+  options?: chrome.tabs.MessageSendOptions
+): Promise<T | null> {
   return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, message, (response: T | undefined) => {
+    chrome.tabs.sendMessage(tabId, message, options ?? {}, (response: T | undefined) => {
       if (chrome.runtime.lastError) {
         resolve(null);
         return;
