@@ -1,23 +1,23 @@
 # ImageLab Freemium Plan
 
+This document is future planning, not a description of active functionality. The current release is local-only and has no cloud, billing, monitoring, OCR service, or external reverse-search integration.
+
 ## Free
 
 - Local right-click capture.
-- Local history, notes, tags, and favorites.
+- Local history, notes, and favorites.
 - Local metadata and dominant-color analysis.
-- Open configured third-party search engines.
-- Optional OCR adapter boundary, with Tesseract.js planned as a local opt-in pack.
-- Cloud searches per month: `0`.
+- Local analysis and editing only.
 
-## Pro
+## Pro (future, inactive)
 
-- Mocked now, real cloud-ready later.
+- Conceptual only; not active in the extension.
 - Normalized cloud result aggregation.
 - Cloud analysis and source hints.
 - Saved cloud searches.
 - Cloud searches per month: `300`.
 
-## Creator/Researcher
+## Creator/Researcher (future, inactive)
 
 - Higher-volume source tracking.
 - Batch search.
@@ -25,14 +25,14 @@
 - Export-oriented workflows.
 - Cloud searches per month: `1500`.
 
-## Team
+## Team (future, inactive)
 
 - Configurable usage limits.
 - Shared saved searches and monitoring.
 - Admin controls and future billing management.
 
-## Local vs Cloud
+## Local vs future scaffolding
 
-Local features run in the browser and store data in `chrome.storage.local`. Opening a third-party engine sends the image URL to that engine because that is how URL-based reverse image search works.
+All current features run in the browser and store data in `chrome.storage.local`. External reverse-search navigation and cloud processing are disabled for the current local-only phase.
 
-Cloud features call the ImageLab backend. These features require server resources because they need account state, usage accounting, saved records, batch queues, monitoring jobs, normalized result storage, upload/proxy support, and eventually paid provider integrations.
+The backend and plan descriptions above are future planning only. They are not implemented active features and the extension does not call the API.

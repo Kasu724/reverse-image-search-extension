@@ -13,6 +13,7 @@ __pycache__/
 .venv/
 venv/
 *.pyc
+*.egg-info/
 *.sqlite
 *.sqlite3
 imagelab.db

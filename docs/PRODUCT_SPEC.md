@@ -1,55 +1,38 @@
 # ImageLab Product Spec
 
-## Product
+## Current product
 
-ImageLab is a Chromium extension for image conversion, reverse image search, and lightweight source investigation. The free product runs locally: it converts selected images, captures image context, opens user-selected search engines, analyzes metadata and dominant colors, and stores notes/history in browser storage. Cloud mode is optional and adds normalized results, saved cloud searches, batch workflows, monitoring, and AI-assisted source discovery.
+ImageLab is a local-only Chromium extension for image conversion, cropping, compression, inspection, and organization. All transforms and analysis use browser APIs. Settings, current-image state, notes, favorites, and bounded history use the local Chromium profile.
 
-## Personas
+The current release does not provide reverse-image-search navigation, cloud uploads, cloud analysis, hosted result aggregation, billing, monitoring, or telemetry. No core workflow requires `apps/api` or another network service.
 
-Casual user:
+When the user selects an HTTP(S) image already displayed on a page or enters a remote image URL, ImageLab may retrieve that selected source directly. It does not forward the image to a processing or search provider.
 
-- Wants to find where an image came from.
-- Needs a simple right-click flow and clear privacy signals.
+## Current workflows
 
-Student/researcher:
+- Capture an image from an image, page, or link context and open the ImageLab workspace.
+- Convert and download PNG, JPG, and WebP output.
+- Copy a locally processed PNG to the clipboard.
+- Crop manually, choose common aspect ratios, or trim transparent/solid borders.
+- Compress toward configurable byte targets, optionally reducing dimensions.
+- Upload a small local image or enter a remote source URL.
+- Inspect dimensions and dominant colors locally.
+- Save local notes, mark favorites, and reopen bounded local history.
+- Configure conversion quality, background, resize, compression, and download behavior.
 
-- Compares sources across multiple engines.
-- Needs local notes, history, and repeatable searches.
+## Product constraints
 
-Artist/creator:
+- No hosted backend, remote AI, analytics, telemetry, billing, or cloud account.
+- No silent upload or forwarding of image URLs, bytes, page context, notes, history, or activity.
+- No third-party image-processing or reverse-search integration.
+- No remote executable code.
+- Public/source image retrieval is limited to the image the user explicitly selected or entered.
+- Browser memory, canvas limits, source permissions, and cross-origin protections may limit some images.
+- Animated formats are decoded as a single frame.
+- OCR is unavailable in the active build and its placeholder adapter makes no external request.
 
-- Tracks unauthorized reposts or altered copies.
-- Benefits from favorites, monitoring, and batch search.
+## Inactive future scaffolding
 
-Journalist/investigator:
+`apps/api` contains local FastAPI/SQLite mock routes for separately reviewed future work. It is not imported or called by the extension, is not a production service, and must not be publicly deployed in the current phase.
 
-- Needs source hints, saved searches, and careful disclosure of where data is sent.
-- Benefits from cloud aggregation and monitoring, but requires explicit controls.
-
-## MVP
-
-- MV3 extension with right-click image capture.
-- Page-level context menu item to open ImageLab from normal page right-clicks.
-- Image context submenu for opening the panel, searching one engine, or searching all enabled engines.
-- Image context submenu presets for conversion, cropping helpers, and compression targets.
-- Manual image entry from a public URL or small local upload.
-- Combined local UI for crop, compression, and format conversion before download or reuse.
-- Configurable engines: Google Images, Bing Visual Search, TinEye, Yandex Images, SauceNAO.
-- Popup and extension tab with selected image, metadata, dominant colors, notes, favorites, and local history.
-- Options page for privacy mode, instant open, enabled engines, cloud mode, API URL, and API key.
-- FastAPI backend with seeded dev API key, SQLite, usage limits, and mock cloud endpoints.
-
-## V1
-
-- Lazy-loaded Tesseract.js OCR option.
-- Better fallback UI for blob/data/protected images.
-- Cloud upload/proxy for images without public URLs.
-- Saved cloud searches and searchable collections.
-- Background monitor definitions with scheduled workers.
-
-## V2
-
-- Licensed result aggregation providers.
-- AI-assisted source discovery with explainable confidence.
-- Batch queues and exports.
-- Team spaces, shared investigations, role-based access, billing, and audit logs.
+Ideas in `FREEMIUM_PLAN.md` are planning notes only. Any future network feature requires a new privacy, permission, security, consent, and data-retention review before activation.

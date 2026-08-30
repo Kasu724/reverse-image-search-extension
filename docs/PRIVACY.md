@@ -1,27 +1,19 @@
-# ImageLab Privacy
+# ImageLab privacy
 
-## Local-Only Processing
+## Active product
 
-By default, ImageLab stores selected images, history, favorites, notes, metadata, and dominant colors in `chrome.storage.local`. Dominant-color analysis runs in an MV3 offscreen document using browser canvas APIs. The default OCR implementation is a local mock adapter and sends nothing.
+ImageLab's active extension is local-only. Images are processed with browser APIs. Settings, current-image state, bounded history, favorites, notes, metadata, and dominant-color analysis remain in the local Chromium profile. There is no analytics, telemetry, hosted AI, cloud processing, or silent upload.
 
-When a user uploads an image in the extension UI, the image is converted to a local data URL for preview, history, notes, and local analysis. It is not sent to third-party engines or the ImageLab backend until the user explicitly starts a cloud action or reverse search that needs a hosted URL.
+Selecting an HTTP(S) image already displayed on a page or entering a remote image URL may cause ImageLab to retrieve that selected source directly from its origin. That source request is necessary to read the chosen image; ImageLab does not forward the bytes, URL, page context, or result to a backend, search provider, or image-processing service.
 
-For uploaded-image reverse search, Cloud Mode uploads the image to the configured ImageLab API and caches the returned hosted URL on the local image record. That hosted URL is then sent to third-party search engines. For real third-party engine fetches, the API must be reachable from the public internet.
+The extension does not require `apps/api`. The backend directory is inactive future scaffolding and is not part of normal runtime.
 
-## Search Engines
+## External navigation
 
-When a user opens Google Images, Bing Visual Search, TinEye, Yandex Images, or SauceNAO, ImageLab opens that engine with the selected image URL. That third-party search engine receives the URL. The UI labels this action with a **Sends to search engine** badge.
+The local-only product does not send image URLs or image bytes to reverse-search providers. Any future external-search capability must be an explicit, separately reviewed action with a clear disclosure before navigation.
 
-Blob, data, protected, and local file images are not public URLs. The extension warns that these need a future upload/proxy workflow before third-party reverse search can work reliably.
+## Storage and permissions
 
-## Cloud Mode
+Embedded local images are kept within a bounded history budget so they do not consume the entire extension storage quota. Browser storage and browser-managed permissions remain subject to the Chromium profile's own storage and privacy controls. Removing the extension or clearing its extension data removes its local state through Chromium.
 
-Cloud mode is off by default. When enabled, the extension sends the image URL, page URL, and selected engine list to the configured ImageLab API for cloud search. Cloud analysis sends the image URL and page URL. The current backend returns mock data and stores usage/search records locally in SQLite.
-
-## User Controls
-
-- Enable or disable each search engine.
-- Keep cloud mode off for local-only workflows.
-- Set the API base URL and API key manually.
-- Disable instant open to avoid automatically launching third-party searches.
-- Store notes/favorites locally without cloud sync.
+Broad HTTP(S) page access supports context-image detection and direct retrieval of the user-selected source. Other requested capabilities are used for context menus, downloads, local storage, clipboard writes, local offscreen processing, scripting into the active page, and temporary active-tab capture.
