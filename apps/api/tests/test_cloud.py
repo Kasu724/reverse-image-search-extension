@@ -79,3 +79,21 @@ def test_upload_image_returns_public_file_url(client):
     file_response = client.get(payload["image_url"].replace("http://testserver", ""))
     assert file_response.status_code == 200
     assert file_response.headers["content-type"] == "image/png"
+
+
+def test_upload_rejects_content_that_does_not_match_declared_type(client):
+    response = client.post(
+        "/api/cloud/upload-image",
+        headers={"X-API-Key": API_KEY},
+        json={"image_data_url": "data:image/png;base64,aGVsbG8="},
+    )
+    assert response.status_code == 400
+
+
+def test_upload_rejects_empty_image_payload(client):
+    response = client.post(
+        "/api/cloud/upload-image",
+        headers={"X-API-Key": API_KEY},
+        json={"image_data_url": "data:image/png;base64,"},
+    )
+    assert response.status_code == 400

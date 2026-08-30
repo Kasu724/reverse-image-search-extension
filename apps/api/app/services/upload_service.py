@@ -25,6 +25,13 @@ CONTENT_TYPE_EXTENSIONS = {
 
 DATA_URL_PATTERN = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
 
+IMAGE_SIGNATURES = {
+    "image/png": lambda value: value.startswith(b"\x89PNG\r\n\x1a\n"),
+    "image/jpeg": lambda value: value.startswith(b"\xff\xd8\xff") and value.endswith(b"\xff\xd9"),
+    "image/gif": lambda value: value.startswith((b"GIF87a", b"GIF89a")),
+    "image/webp": lambda value: value.startswith(b"RIFF") and value[8:12] == b"WEBP",
+}
+
 
 @dataclass(frozen=True)
 class StoredUpload:
@@ -43,6 +50,7 @@ def save_image_data_url(image_data_url: str) -> StoredUpload:
         )
 
     content_type, encoded = match.groups()
+    content_type = content_type.lower()
     extension = CONTENT_TYPE_EXTENSIONS.get(content_type)
     if not extension:
         raise HTTPException(
@@ -64,10 +72,24 @@ def save_image_data_url(image_data_url: str) -> StoredUpload:
             detail=f"Uploaded images are limited to {MAX_UPLOAD_BYTES} bytes.",
         )
 
+    if not image_bytes or not IMAGE_SIGNATURES[content_type](image_bytes):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload content does not match its declared image type.",
+        )
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     upload_id = secrets.token_urlsafe(18)
     path = UPLOAD_DIR / f"{upload_id}{extension}"
-    path.write_bytes(image_bytes)
+    try:
+        path.write_bytes(image_bytes)
+    except OSError as exc:
+        # Do not return a record for a partially written/unavailable upload.
+        path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to store uploaded image locally.",
+        ) from exc
     return StoredUpload(
         upload_id=upload_id,
         path=path,

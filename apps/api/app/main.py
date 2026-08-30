@@ -25,23 +25,30 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="ImageLab API",
     version="0.1.0",
-    description="Cloud-ready API for ImageLab reverse image workflows.",
+    description="Inactive local scaffolding for future ImageLab server workflows. The extension does not require or call this service.",
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("IMAGELAB_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-API-Key", "Authorization"],
+    )
 
 app.include_router(health.router)
 app.include_router(cloud.router)
 
 
 def seed_dev_data() -> None:
-    seed_demo = os.getenv("IMAGELAB_SEED_DEMO", os.getenv("IMAGETRACER_SEED_DEMO", "1"))
+    # Never create a known credential unless a developer explicitly opts in.
+    seed_demo = os.getenv("IMAGELAB_SEED_DEMO", os.getenv("IMAGETRACER_SEED_DEMO", "0"))
     if seed_demo != "1":
         return
 

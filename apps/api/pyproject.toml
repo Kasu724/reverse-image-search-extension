@@ -1,7 +1,7 @@
 [project]
 name = "imagelab-api"
 version = "0.1.0"
-description = "FastAPI backend for ImageLab cloud-ready features."
+description = "Inactive local FastAPI scaffolding for future ImageLab work."
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",
