@@ -11,7 +11,6 @@ import {
   readSettings as readConverterSettings
 } from "../converter/settings";
 import { isBlobUrl, isDataUrl, isHttpUrl, truncateForDisplay } from "../converter/urls";
-import { uploadImageForSearch } from "../shared/cloudClient";
 import {
   CONVERT_IMAGE_MESSAGE_TYPE,
   COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
@@ -20,15 +19,13 @@ import {
   ERROR_PAGE_PATH,
   OFFSCREEN_DOCUMENT_PATH
 } from "../shared/constants";
-import { buildEnabledSearchUrls, buildSearchUrl } from "../shared/searchEngines";
 import {
   getCurrentImage,
-  getSettings,
   setCurrentImage,
   updateCurrentImage,
   upsertHistoryEntry
 } from "../shared/storage";
-import { createSelectedImage, imageNeedsUploadProxy } from "../shared/imageMetadata";
+import { createSelectedImage } from "../shared/imageMetadata";
 import type {
   ContentDetectedImage,
   ContentImageContext,
@@ -39,7 +36,6 @@ import type {
   OutputImageFormat,
   RuntimeRequest,
   RuntimeResponse,
-  SearchEngineId,
   SelectedImage
 } from "../shared/types";
 
@@ -125,25 +121,35 @@ type ViewportRect = {
 const CACHED_CONTEXT_IMAGE_MAX_AGE_MS = 90_000;
 const cachedContextImages = new Map<string, CachedContextImage>();
 
-void registerContextMenus();
+void registerContextMenus().catch((error) => {
+  console.error("ImageLab context-menu registration failed.", error);
+});
 
 chrome.runtime.onInstalled.addListener(() => {
-  void registerContextMenus();
+  void registerContextMenus().catch((error) => {
+    console.error("ImageLab context-menu registration failed.", error);
+  });
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void registerContextMenus();
+  void registerContextMenus().catch((error) => {
+    console.error("ImageLab context-menu registration failed.", error);
+  });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (isOpenImageLabMenuClick(info)) {
-    void openImageLabSurface(tab?.id);
+    void openImageLabSurface(tab?.id).catch((error) => {
+      console.error("ImageLab could not open its workspace.", error);
+    });
     return;
   }
 
   const imageAction = getImageContextMenuAction(info);
   if (imageAction) {
-    void handleImageContextClick(info, tab, imageAction);
+    void handleImageContextClick(info, tab, imageAction).catch((error) => {
+      console.error("ImageLab context-menu action failed.", error);
+    });
   }
 });
 
@@ -225,33 +231,18 @@ async function handleImageContextClick(
     return;
   }
 
-  void analyzeAndStore(image);
+  void analyzeAndStore(image).catch((error) => {
+    console.warn("ImageLab local image analysis failed.", error);
+  });
 
   try {
-    if (action.type === "open-panel") {
-      const settings = await getSettings();
-      if (settings.instantOpen) {
-        await openEnabledEngines(image, settings.enabledEngines);
-      }
-      await openImageLabSurface(tab?.id);
-      return;
-    }
-
     if (action.type === "crop-open") {
       await openImageLabSurface(tab?.id);
       return;
     }
-
-    if (action.type === "search-all") {
-      const settings = await getSettings();
-      await openEnabledEngines(image, settings.enabledEngines);
-      return;
-    }
-
-    await openEngine(image, action.engineId);
   } catch (error) {
     await openImageLabSurface(tab?.id);
-    console.warn("ImageLab context-menu search failed.", error);
+    console.warn("ImageLab context-menu workspace action failed.", error);
   }
 }
 
@@ -290,12 +281,13 @@ async function handleImageCopyContextClick(
       );
     }
 
-    await ensureOffscreenDocument();
-    const copyResponse = await sendRuntimeMessage<CopyOffscreenResponse>({
-      type: COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
-      dataUrl: response.dataUrl,
-      mimeType: response.mimeType || "image/png"
-    });
+    const copyResponse = await withOffscreenDocument(() =>
+      sendRuntimeMessage<CopyOffscreenResponse>({
+        type: COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE,
+        dataUrl: response.dataUrl,
+        mimeType: response.mimeType || "image/png"
+      })
+    );
 
     if (!copyResponse.ok) {
       throw errorFromPayload(copyResponse.error);
@@ -405,21 +397,21 @@ async function processImageFromContext(
     : settings;
   const sourcePayload = await buildConversionSourcePayload(info, tab);
 
-  await ensureOffscreenDocument();
-
-  const response = await sendRuntimeMessage<ConvertOffscreenResponse>({
-    type: CONVERT_IMAGE_MESSAGE_TYPE,
-    payload: {
-      ...sourcePayload,
-      pageUrl: info.pageUrl || tab?.url || "",
-      frameUrl: info.frameUrl || "",
-      targetFormat: options.targetFormat,
-      crop: options.crop ?? null,
-      autoCrop: options.autoCrop ?? null,
-      compression: options.compression ?? null,
-      settings: effectiveSettings
-    }
-  });
+  const response = await withOffscreenDocument(() =>
+    sendRuntimeMessage<ConvertOffscreenResponse>({
+      type: CONVERT_IMAGE_MESSAGE_TYPE,
+      payload: {
+        ...sourcePayload,
+        pageUrl: info.pageUrl || tab?.url || "",
+        frameUrl: info.frameUrl || "",
+        targetFormat: options.targetFormat,
+        crop: options.crop ?? null,
+        autoCrop: options.autoCrop ?? null,
+        compression: options.compression ?? null,
+        settings: effectiveSettings
+      }
+    })
+  );
 
   if (!response.ok || !response.dataUrl || !response.filename) {
     throw errorFromPayload(response.error);
@@ -1315,21 +1307,16 @@ async function handleRuntimeRequest(request: RuntimeRequest): Promise<RuntimeRes
       return { ok: true, data: image };
     }
     case "OPEN_SEARCH_ENGINE": {
-      const image = await getCurrentImage();
-      if (!image) {
-        return { ok: false, error: "Select an image first." };
-      }
-      await openEngine(image, request.engineId);
-      return { ok: true };
+      return {
+        ok: false,
+        error: "Reverse image search is disabled in local-only mode."
+      };
     }
     case "OPEN_ENABLED_ENGINES": {
-      const image = await getCurrentImage();
-      if (!image) {
-        return { ok: false, error: "Select an image first." };
-      }
-      const settings = await getSettings();
-      await openEnabledEngines(image, settings.enabledEngines);
-      return { ok: true };
+      return {
+        ok: false,
+        error: "Reverse image search is disabled in local-only mode."
+      };
     }
     case "ANALYZE_CURRENT_IMAGE": {
       const image = await getCurrentImage();
@@ -1360,89 +1347,6 @@ async function handleRuntimeRequest(request: RuntimeRequest): Promise<RuntimeRes
   }
 }
 
-async function openEngine(image: SelectedImage, engineId: SearchEngineId): Promise<void> {
-  const { image: searchableImage, imageUrl } = await ensureSearchableImageUrl(image);
-  const result = buildSearchUrl(engineId, imageUrl);
-  if (!result.ok || !result.url) {
-    throw new Error(result.reason ?? "This image cannot be opened in that search engine.");
-  }
-  await createTab(result.url);
-  await upsertHistoryEntry(searchableImage, [engineId]);
-}
-
-async function openEnabledEngines(
-  image: SelectedImage,
-  engineIds: SearchEngineId[]
-): Promise<void> {
-  const { image: searchableImage, imageUrl } = await ensureSearchableImageUrl(image);
-  const urls = buildEnabledSearchUrls(engineIds, imageUrl);
-  const opened: SearchEngineId[] = [];
-  const errors: string[] = [];
-
-  for (const { engineId, result } of urls) {
-    if (!result.ok || !result.url) {
-      errors.push(result.reason ?? `Could not open ${engineId}.`);
-      continue;
-    }
-    await createTab(result.url, false);
-    opened.push(engineId);
-  }
-
-  if (opened.length > 0) {
-    await upsertHistoryEntry(searchableImage, opened);
-  }
-
-  if (opened.length === 0 && errors.length > 0) {
-    throw new Error(errors[0]);
-  }
-}
-
-async function ensureSearchableImageUrl(
-  image: SelectedImage
-): Promise<{ image: SelectedImage; imageUrl: string }> {
-  if (!imageNeedsUploadProxy(image.srcUrl)) {
-    return { image, imageUrl: image.srcUrl };
-  }
-
-  if (image.remoteImageUrl) {
-    return { image, imageUrl: image.remoteImageUrl };
-  }
-
-  if (!image.srcUrl.startsWith("data:image/")) {
-    throw new Error(
-      "This protected image cannot be uploaded from the extension yet. Save or upload the image file in ImageLab first."
-    );
-  }
-
-  const settings = await getSettings();
-  if (!settings.cloudMode) {
-    throw new Error(
-      "Uploaded-image reverse search needs Cloud Mode. Enable Cloud Mode and set your ImageLab API key in settings."
-    );
-  }
-
-  const upload = await uploadImageForSearch(
-    {
-      apiBaseUrl: settings.apiBaseUrl,
-      apiKey: settings.apiKey
-    },
-    {
-      image_data_url: image.srcUrl,
-      filename: image.title ?? image.id
-    }
-  );
-
-  const updatedImage: SelectedImage = {
-    ...image,
-    remoteImageUrl: upload.image_url,
-    remoteImageUploadedAt: new Date().toISOString()
-  };
-  await setCurrentImage(updatedImage);
-  await upsertHistoryEntry(updatedImage);
-
-  return { image: updatedImage, imageUrl: upload.image_url };
-}
-
 async function processCurrentImage(
   image: SelectedImage,
   options: ImageProcessOptions
@@ -1450,27 +1354,27 @@ async function processCurrentImage(
   const settings = await readConverterSettings();
   const sourcePayload = buildStoredImageSourcePayload(image);
 
-  await ensureOffscreenDocument();
-
-  const response = await sendRuntimeMessage<ConvertOffscreenResponse>({
-    type: CONVERT_IMAGE_MESSAGE_TYPE,
-    payload: {
-      ...sourcePayload,
-      pageUrl: image.pageUrl || "",
-      targetFormat: options.targetFormat,
-      crop: options.crop ?? null,
-      autoCrop: options.autoCrop ?? null,
-      compression: options.compression
-        ? {
-            ...options.compression,
-            targetBytes: normalizeCompressionTargetBytes(options.compression.targetBytes),
-            minQuality: options.compression.minQuality ?? settings.compressionMinQuality,
-            allowResize: options.compression.allowResize ?? settings.compressionAllowResize
-          }
-        : null,
-      settings
-    }
-  });
+  const response = await withOffscreenDocument(() =>
+    sendRuntimeMessage<ConvertOffscreenResponse>({
+      type: CONVERT_IMAGE_MESSAGE_TYPE,
+      payload: {
+        ...sourcePayload,
+        pageUrl: image.pageUrl || "",
+        targetFormat: options.targetFormat,
+        crop: options.crop ?? null,
+        autoCrop: options.autoCrop ?? null,
+        compression: options.compression
+          ? {
+              ...options.compression,
+              targetBytes: normalizeCompressionTargetBytes(options.compression.targetBytes),
+              minQuality: options.compression.minQuality ?? settings.compressionMinQuality,
+              allowResize: options.compression.allowResize ?? settings.compressionAllowResize
+            }
+          : null,
+        settings
+      }
+    })
+  );
 
   if (!response.ok || !response.dataUrl || !response.filename) {
     throw errorFromPayload(response.error);
@@ -1515,16 +1419,16 @@ async function detectCurrentImageCrop(
   mode: "transparent" | "solid",
   tolerance?: number
 ): Promise<DetectedCropResult> {
-  await ensureOffscreenDocument();
-
-  const response = await sendRuntimeMessage<DetectCropOffscreenResponse>({
-    type: DETECT_CROP_MESSAGE_TYPE,
-    payload: {
-      ...buildStoredImageSourcePayload(image),
-      mode,
-      tolerance
-    }
-  });
+  const response = await withOffscreenDocument(() =>
+    sendRuntimeMessage<DetectCropOffscreenResponse>({
+      type: DETECT_CROP_MESSAGE_TYPE,
+      payload: {
+        ...buildStoredImageSourcePayload(image),
+        mode,
+        tolerance
+      }
+    })
+  );
 
   if (!response.ok || !response.crop || !response.width || !response.height) {
     throw errorFromPayload(response.error);
@@ -1595,16 +1499,44 @@ async function analyzeAndStore(image: SelectedImage): Promise<LocalImageAnalysis
 }
 
 async function analyzeImageWithOffscreen(srcUrl: string): Promise<OffscreenResponse> {
+  return withOffscreenDocument(() =>
+    sendRuntimeMessage<OffscreenResponse>({
+      type: "OFFSCREEN_ANALYZE_IMAGE",
+      srcUrl
+    })
+  );
+}
+
+const OFFSCREEN_IDLE_CLOSE_DELAY_MS = 30_000;
+let offscreenCreation: Promise<void> | null = null;
+let offscreenClose: Promise<void> | null = null;
+let offscreenIdleCloseTimer: ReturnType<typeof setTimeout> | null = null;
+let offscreenOperationCount = 0;
+let offscreenLifecycleVersion = 0;
+
+async function withOffscreenDocument<T>(operation: () => Promise<T>): Promise<T> {
   await ensureOffscreenDocument();
-  return sendRuntimeMessage<OffscreenResponse>({
-    type: "OFFSCREEN_ANALYZE_IMAGE",
-    srcUrl
-  });
+  offscreenOperationCount += 1;
+  clearOffscreenIdleCloseTimer();
+
+  try {
+    return await operation();
+  } finally {
+    offscreenOperationCount -= 1;
+    scheduleOffscreenIdleClose();
+  }
 }
 
 async function ensureOffscreenDocument(): Promise<void> {
   if (!chrome.offscreen) {
     throw new Error("Offscreen documents are not available in this Chromium build.");
+  }
+
+  offscreenLifecycleVersion += 1;
+  clearOffscreenIdleCloseTimer();
+
+  if (offscreenClose) {
+    await offscreenClose;
   }
 
   const offscreenApi = chrome.offscreen as typeof chrome.offscreen & {
@@ -1615,11 +1547,79 @@ async function ensureOffscreenDocument(): Promise<void> {
     return;
   }
 
-  await chrome.offscreen.createDocument({
+  // hasDocument() and createDocument() are separate asynchronous calls. Keep
+  // one shared creation promise so concurrent operations cannot race them.
+  if (offscreenCreation) {
+    await offscreenCreation;
+    return;
+  }
+
+  const creation = chrome.offscreen.createDocument({
     url: OFFSCREEN_DOCUMENT_PATH,
     reasons: ["BLOBS", "DOM_PARSER", "CLIPBOARD"] as chrome.offscreen.Reason[],
     justification: "Analyze, convert, and copy selected images locally using browser APIs."
   });
+  offscreenCreation = creation;
+  try {
+    await creation;
+  } finally {
+    if (offscreenCreation === creation) {
+      offscreenCreation = null;
+    }
+  }
+}
+
+function scheduleOffscreenIdleClose(): void {
+  if (offscreenOperationCount > 0 || !chrome.offscreen) {
+    return;
+  }
+
+  clearOffscreenIdleCloseTimer();
+  // Keep the shared document alive for short bursts of work. The operation
+  // count, lifecycle version, and close promise together prevent cleanup from
+  // racing another conversion or analysis request.
+  const version = offscreenLifecycleVersion;
+  offscreenIdleCloseTimer = setTimeout(() => {
+    offscreenIdleCloseTimer = null;
+    if (offscreenOperationCount > 0 || version !== offscreenLifecycleVersion) {
+      return;
+    }
+
+    const offscreenApi = chrome.offscreen as typeof chrome.offscreen & {
+      hasDocument?: () => Promise<boolean>;
+    };
+    const close = (async () => {
+      if (offscreenOperationCount > 0 || version !== offscreenLifecycleVersion) {
+        return;
+      }
+      if (offscreenApi.hasDocument && !(await offscreenApi.hasDocument())) {
+        return;
+      }
+      if (offscreenOperationCount > 0 || version !== offscreenLifecycleVersion) {
+        return;
+      }
+      await offscreenApi.closeDocument();
+    })();
+
+    let handledClose: Promise<void>;
+    handledClose = close
+      .catch((error) => {
+        console.warn("ImageLab idle offscreen cleanup failed.", error);
+      })
+      .finally(() => {
+        if (offscreenClose === handledClose) {
+          offscreenClose = null;
+        }
+      });
+    offscreenClose = handledClose;
+  }, OFFSCREEN_IDLE_CLOSE_DELAY_MS);
+}
+
+function clearOffscreenIdleCloseTimer(): void {
+  if (offscreenIdleCloseTimer) {
+    clearTimeout(offscreenIdleCloseTimer);
+    offscreenIdleCloseTimer = null;
+  }
 }
 
 function getFrameMessageOptions(
@@ -1693,6 +1693,12 @@ async function openConversionErrorPage(
 }
 
 function createTab(url: string, active = true): Promise<chrome.tabs.Tab> {
+  if (!url.startsWith(chrome.runtime.getURL(""))) {
+    return Promise.reject(
+      new Error("ImageLab only opens local extension pages in local-only mode.")
+    );
+  }
+
   return new Promise((resolve, reject) => {
     chrome.tabs.create({ url, active }, (tab) => {
       const error = chrome.runtime.lastError;

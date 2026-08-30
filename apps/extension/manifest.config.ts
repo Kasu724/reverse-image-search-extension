@@ -3,7 +3,7 @@ const manifest: chrome.runtime.ManifestV3 = {
   name: "ImageLab",
   version: "1.0.0",
   description:
-    "Right-click image conversion, downloads, reverse search, local analysis, and optional cloud workflows.",
+    "Local-only right-click image conversion, downloads, cropping, compression, and analysis.",
   minimum_chrome_version: "109",
   action: {
     default_title: "ImageLab",
@@ -35,8 +35,7 @@ const manifest: chrome.runtime.ManifestV3 = {
     "downloads",
     "offscreen",
     "scripting",
-    "storage",
-    "tabs"
+    "storage"
   ],
   host_permissions: ["http://*/*", "https://*/*"],
   icons: {
@@ -46,8 +45,9 @@ const manifest: chrome.runtime.ManifestV3 = {
     "128": "icons/icon128.png"
   },
   content_security_policy: {
-    extension_pages:
-      "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*;"
+    // HTTP(S) is required only to read the image the user selected on a page;
+    // no extension code uses it for cloud/API or telemetry requests.
+    extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' http: https:;"
   }
 };
 

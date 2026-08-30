@@ -1,7 +1,6 @@
 import { CONTEXT_MENU_IDS } from "../shared/constants";
 import { COMPRESSION_PRESETS } from "../converter/settings";
-import { SEARCH_ENGINES } from "../shared/searchEngines";
-import type { AutoCropMode, SearchEngineId } from "../shared/types";
+import type { AutoCropMode } from "../shared/types";
 
 export type ImageContextMenuAction =
   | { type: "convert"; format: "png" | "jpg" | "webp" }
@@ -10,10 +9,7 @@ export type ImageContextMenuAction =
   | { type: "crop-open" }
   | { type: "auto-crop"; mode: AutoCropMode }
   | { type: "compress"; targetBytes: number }
-  | { type: "compress-options" }
-  | { type: "open-panel" }
-  | { type: "search-all" }
-  | { type: "search-engine"; engineId: SearchEngineId };
+  | { type: "compress-options" };
 
 const IMAGE_TOOL_CONTEXTS: NonNullable<chrome.contextMenus.CreateProperties["contexts"]> = [
   "image",
@@ -21,100 +17,102 @@ const IMAGE_TOOL_CONTEXTS: NonNullable<chrome.contextMenus.CreateProperties["con
   "link"
 ];
 
+let contextMenuRegistration: Promise<void> | null = null;
+
 export function registerContextMenus(): Promise<void> {
-  return new Promise((resolve) => {
+  if (contextMenuRegistration) {
+    return contextMenuRegistration;
+  }
+
+  const registration = new Promise<void>((resolve, reject) => {
     chrome.contextMenus.removeAll(() => {
-      chrome.contextMenus.create({
+      const removeError = chrome.runtime.lastError;
+      if (removeError) {
+        reject(new Error(removeError.message));
+        return;
+      }
+
+      const menuItems: chrome.contextMenus.CreateProperties[] = [
+        {
         id: CONTEXT_MENU_IDS.openImageLab,
         title: "Open ImageLab",
-        contexts: ["page", "selection", "link", "editable", "video", "audio"]
-      });
-
-      chrome.contextMenus.create({
+        contexts: ["page", "selection", "link", "editable", "video", "audio", "image"]
+        },
+        {
         id: CONTEXT_MENU_IDS.imageParent,
         title: "ImageLab",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.convertParent,
         parentId: CONTEXT_MENU_IDS.imageParent,
         title: "Convert",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.convertDownloadPng,
         parentId: CONTEXT_MENU_IDS.convertParent,
         title: "Download as PNG",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.convertDownloadJpg,
         parentId: CONTEXT_MENU_IDS.convertParent,
         title: "Download as JPG",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.convertDownloadWebp,
         parentId: CONTEXT_MENU_IDS.convertParent,
         title: "Download as WEBP",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.convertQuickDefault,
         parentId: CONTEXT_MENU_IDS.convertParent,
         title: "Quick Convert Using Default Format",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.copyImage,
         parentId: CONTEXT_MENU_IDS.imageParent,
         title: "Copy Image",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.cropParent,
         parentId: CONTEXT_MENU_IDS.imageParent,
         title: "Crop",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.cropOpenEditor,
         parentId: CONTEXT_MENU_IDS.cropParent,
         title: "Open Crop Editor",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.cropAutoTransparent,
         parentId: CONTEXT_MENU_IDS.cropParent,
         title: "Trim Transparent Border and Download",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.cropAutoSolid,
         parentId: CONTEXT_MENU_IDS.cropParent,
         title: "Trim Solid-Color Border and Download",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
+        },
+        {
         id: CONTEXT_MENU_IDS.compressParent,
         parentId: CONTEXT_MENU_IDS.imageParent,
         title: "Compress",
         contexts: IMAGE_TOOL_CONTEXTS
-      });
+        }
+      ];
 
       for (const preset of COMPRESSION_PRESETS) {
-        chrome.contextMenus.create({
+        menuItems.push({
           id: `${CONTEXT_MENU_IDS.compressPresetPrefix}${preset.targetBytes}`,
           parentId: CONTEXT_MENU_IDS.compressParent,
           title: `Download under ${preset.label}`,
@@ -122,45 +120,45 @@ export function registerContextMenus(): Promise<void> {
         });
       }
 
-      chrome.contextMenus.create({
+      menuItems.push({
         id: CONTEXT_MENU_IDS.compressOpenOptions,
         parentId: CONTEXT_MENU_IDS.compressParent,
         title: "Compression Settings...",
         contexts: IMAGE_TOOL_CONTEXTS
       });
 
-      chrome.contextMenus.create({
-        id: CONTEXT_MENU_IDS.searchParent,
-        parentId: CONTEXT_MENU_IDS.imageParent,
-        title: "Search",
-        contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
-        id: CONTEXT_MENU_IDS.searchOpenPanel,
-        parentId: CONTEXT_MENU_IDS.searchParent,
-        title: "Open panel",
-        contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      chrome.contextMenus.create({
-        id: CONTEXT_MENU_IDS.searchAll,
-        parentId: CONTEXT_MENU_IDS.searchParent,
-        title: "Search all enabled engines",
-        contexts: IMAGE_TOOL_CONTEXTS
-      });
-
-      for (const engine of SEARCH_ENGINES) {
-        chrome.contextMenus.create({
-          id: `${CONTEXT_MENU_IDS.searchEnginePrefix}${engine.id}`,
-          parentId: CONTEXT_MENU_IDS.searchParent,
-          title: `Search ${engine.name}`,
-          contexts: IMAGE_TOOL_CONTEXTS
-        });
-      }
-
-      resolve();
+      void (async () => {
+        for (const properties of menuItems) {
+          await createContextMenu(properties);
+        }
+      })().then(resolve, reject);
     });
+  });
+
+  let scheduledRegistration: Promise<void>;
+  scheduledRegistration = registration.finally(() => {
+    if (contextMenuRegistration === scheduledRegistration) {
+      contextMenuRegistration = null;
+    }
+  });
+  contextMenuRegistration = scheduledRegistration;
+  return scheduledRegistration;
+}
+
+function createContextMenu(properties: chrome.contextMenus.CreateProperties): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    try {
+      chrome.contextMenus.create(properties, () => {
+        const createError = chrome.runtime.lastError;
+        if (createError) {
+          reject(new Error(createError.message));
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
   });
 }
 
@@ -217,24 +215,6 @@ export function getImageContextMenuAction(
     if (Number.isFinite(targetBytes) && targetBytes > 0) {
       return { type: "compress", targetBytes };
     }
-  }
-
-  if (info.menuItemId === CONTEXT_MENU_IDS.searchOpenPanel) {
-    return { type: "open-panel" };
-  }
-
-  if (info.menuItemId === CONTEXT_MENU_IDS.searchAll) {
-    return { type: "search-all" };
-  }
-
-  if (
-    typeof info.menuItemId === "string" &&
-    info.menuItemId.startsWith(CONTEXT_MENU_IDS.searchEnginePrefix)
-  ) {
-    const engineId = info.menuItemId.slice(
-      CONTEXT_MENU_IDS.searchEnginePrefix.length
-    ) as SearchEngineId;
-    return { type: "search-engine", engineId };
   }
 
   return null;

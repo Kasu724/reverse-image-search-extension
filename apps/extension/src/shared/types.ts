@@ -81,6 +81,7 @@ export interface LocalImageAnalysis {
 export interface SelectedImage {
   id: string;
   srcUrl: string;
+  /** Legacy cloud fields may still exist in migrated storage but are never used. */
   remoteImageUrl?: string;
   remoteImageUploadedAt?: string;
   pageUrl?: string;
@@ -103,62 +104,16 @@ export interface SearchHistoryItem {
 }
 
 export interface ImageLabSettings {
+  /** Legacy search settings retained only so existing local storage remains readable. */
   enabledEngines: SearchEngineId[];
   privacyMode: boolean;
   instantOpen: boolean;
-  cloudMode: boolean;
-  apiBaseUrl: string;
-  apiKey: string;
+  cloudMode?: boolean;
+  apiBaseUrl?: string;
+  apiKey?: string;
 }
 
 export type NotesByImageId = Record<string, string>;
-
-export interface CloudSearchRequest {
-  image_url: string;
-  page_url?: string;
-  enabled_engines: SearchEngineId[];
-}
-
-export interface CloudSearchResult {
-  engine: string;
-  title: string;
-  url: string;
-  thumbnail_url?: string;
-  snippet: string;
-  confidence: number;
-}
-
-export interface CloudSearchResponse {
-  results: CloudSearchResult[];
-  usage: CloudUsage;
-}
-
-export interface CloudAnalysisResponse {
-  description: string;
-  likely_objects: string[];
-  likely_source_hints: string[];
-  suggested_queries: string[];
-}
-
-export interface CloudImageUploadRequest {
-  image_data_url: string;
-  filename?: string;
-}
-
-export interface CloudImageUploadResponse {
-  upload_id: string;
-  image_url: string;
-  content_type: string;
-  size_bytes: number;
-}
-
-export interface CloudUsage {
-  plan: "free" | "pro" | "creator" | "team";
-  used: number;
-  limit: number | null;
-  remaining: number | null;
-  period: string;
-}
 
 export type RuntimeRequest =
   | { type: "OPEN_SEARCH_ENGINE"; engineId: SearchEngineId }

@@ -51,8 +51,8 @@ document.addEventListener(
 );
 
 chrome.runtime.onMessage.addListener(
-  (request: ContentScriptRequest, _sender, sendResponse) => {
-    if (!request || typeof request !== "object") {
+  (request: unknown, _sender, sendResponse) => {
+    if (!isContentScriptRequest(request)) {
       return false;
     }
 
@@ -88,6 +88,19 @@ chrome.runtime.onMessage.addListener(
     return false;
   }
 );
+
+function isContentScriptRequest(value: unknown): value is ContentScriptRequest {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const request = value as { type?: unknown; srcUrl?: unknown };
+  if (request.type === "GET_CONTEXT_IMAGE") {
+    return request.srcUrl === undefined || typeof request.srcUrl === "string";
+  }
+
+  return request.type === "GET_IMAGE_CONTEXT" && typeof request.srcUrl === "string";
+}
 
 function getRecentContextImage(): ContentDetectedImage | null {
   if (Date.now() - lastContextImageAt > LAST_CONTEXT_IMAGE_MAX_AGE_MS) {

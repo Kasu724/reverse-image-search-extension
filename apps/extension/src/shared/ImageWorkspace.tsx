@@ -1,9 +1,6 @@
 import {
-  AlertTriangle,
-  Cloud,
   Crop,
   Download,
-  ExternalLink,
   FileArchive,
   FileText,
   History,
@@ -22,23 +19,19 @@ import {
   Wand2
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { OUTPUT_FORMATS, formatLabel } from "../converter/constants";
 import {
   DEFAULT_SETTINGS as DEFAULT_CONVERTER_SETTINGS,
   normalizeCompressionTargetBytes,
   readSettings as readConverterSettings
 } from "../converter/settings";
-import { getCloudUsage, runCloudAnalyze, runCloudSearch, uploadImageForSearch } from "./cloudClient";
-import { createSelectedImage, formatDimensions, imageNeedsUploadProxy } from "./imageMetadata";
-import { getCloudDisclosure, getThirdPartyDisclosure, getUploadProxyHint } from "./permissions";
-import { SEARCH_ENGINES, getSearchEngine } from "./searchEngines";
+import { createSelectedImage, formatDimensions } from "./imageMetadata";
 import {
   getCurrentImage,
   getFavorites,
   getHistory,
   getNotes,
-  getSettings,
   setCurrentImage,
   setNote,
   subscribeToStorage,
@@ -46,15 +39,10 @@ import {
   upsertHistoryEntry
 } from "./storage";
 import type {
-  CloudAnalysisResponse,
-  CloudSearchResult,
-  CloudUsage,
   DetectedCropResult,
   ImageProcessResult,
-  ImageLabSettings,
   OutputImageFormat,
   PixelCropRect,
-  SearchEngineId,
   SearchHistoryItem,
   SelectedImage
 } from "./types";
@@ -67,11 +55,7 @@ interface ImageWorkspaceProps {
 type ProcessingBusyAction = "process-image" | "detect-crop-transparent" | "detect-crop-solid";
 
 type BusyAction =
-  | SearchEngineId
-  | "all"
   | "analysis"
-  | "cloud-search"
-  | "cloud-analyze"
   | ProcessingBusyAction
   | null;
 
@@ -85,7 +69,6 @@ type ConverterSettings = typeof DEFAULT_CONVERTER_SETTINGS & {
 const MAX_LOCAL_UPLOAD_BYTES = 2_500_000;
 
 export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
-  const [settings, setSettings] = useState<ImageLabSettings | null>(null);
   const [converterSettings, setConverterSettings] = useState<ConverterSettings | null>(null);
   const [currentImage, setCurrentImageState] = useState<SelectedImage | null>(null);
   const [history, setHistory] = useState<SearchHistoryItem[]>([]);
@@ -96,9 +79,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
   const [busy, setBusy] = useState<BusyAction>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [manualUrl, setManualUrl] = useState("");
-  const [cloudResults, setCloudResults] = useState<CloudSearchResult[]>([]);
-  const [cloudAnalysis, setCloudAnalysis] = useState<CloudAnalysisResponse | null>(null);
-  const [usage, setUsage] = useState<CloudUsage | null>(null);
   const [outputFormat, setOutputFormat] = useState<OutputImageFormat>("png");
   const [cropEnabled, setCropEnabled] = useState(false);
   const [cropRect, setCropRect] = useState<PixelCropRect | null>(null);
@@ -108,21 +88,18 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
 
   async function refresh() {
     const [
-      nextSettings,
       nextConverterSettings,
       image,
       nextHistory,
       nextNotes,
       nextFavorites
     ] = await Promise.all([
-      getSettings(),
       readConverterSettings(),
       getCurrentImage(),
       getHistory(),
       getNotes(),
       getFavorites()
     ]);
-    setSettings(nextSettings);
     setConverterSettings(nextConverterSettings as ConverterSettings);
     setCurrentImageState(image);
     setHistory(nextHistory);
@@ -131,10 +108,18 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     setNoteDraft(image ? nextNotes[image.id] ?? "" : "");
   }
 
+  async function refreshSafely() {
+    try {
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load local ImageLab data.");
+    }
+  }
+
   useEffect(() => {
-    void refresh();
+    void refreshSafely();
     return subscribeToStorage(() => {
-      void refresh();
+      void refreshSafely();
     });
   }, []);
 
@@ -160,13 +145,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     currentImage?.analysis?.height
   ]);
 
-  const enabledEngines = useMemo(() => {
-    if (!settings) {
-      return [];
-    }
-    return SEARCH_ENGINES.filter((engine) => settings.enabledEngines.includes(engine.id));
-  }, [settings]);
-
   const isFavorite = Boolean(currentImage && favorites.includes(currentImage.id));
   const dimensions = currentImage
     ? formatDimensions(
@@ -174,7 +152,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
         currentImage.analysis?.height ?? currentImage.height
       )
     : "";
-  const uploadProxyHint = currentImage ? getUploadProxyHint(currentImage) : null;
 
   async function runAction(action: BusyAction, operation: () => Promise<void>) {
     setBusy(action);
@@ -186,28 +163,8 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
       setError(caught instanceof Error ? caught.message : "Action failed.");
     } finally {
       setBusy(null);
-      await refresh();
+      await refreshSafely();
     }
-  }
-
-  async function openEngine(engineId: SearchEngineId) {
-    await runAction(engineId, async () => {
-      const response = await sendRuntimeMessage({ type: "OPEN_SEARCH_ENGINE", engineId });
-      if (!response.ok) {
-        throw new Error(response.error ?? "Could not open search engine.");
-      }
-      setStatus(`Opened ${getSearchEngine(engineId).name}.`);
-    });
-  }
-
-  async function openAll() {
-    await runAction("all", async () => {
-      const response = await sendRuntimeMessage({ type: "OPEN_ENABLED_ENGINES" });
-      if (!response.ok) {
-        throw new Error(response.error ?? "Could not open enabled engines.");
-      }
-      setStatus("Opened all enabled engines.");
-    });
   }
 
   async function analyzeCurrentImage() {
@@ -224,8 +181,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     await runAction("analysis", async () => {
       await setCurrentImage(image);
       await upsertHistoryEntry(image);
-      setCloudResults([]);
-      setCloudAnalysis(null);
 
       const response = await sendRuntimeMessage({ type: "ANALYZE_CURRENT_IMAGE" });
       setStatus(response.ok ? `${message} Local analysis refreshed.` : message);
@@ -284,47 +239,10 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
       });
       await setCurrentImage(image);
       await upsertHistoryEntry(image);
-      setCloudResults([]);
-      setCloudAnalysis(null);
 
       const response = await sendRuntimeMessage({ type: "ANALYZE_CURRENT_IMAGE" });
       setStatus(response.ok ? "Image uploaded locally. Local analysis refreshed." : "Image uploaded locally.");
     });
-  }
-
-  async function ensureCloudReadyImage(image: SelectedImage): Promise<SelectedImage> {
-    if (!imageNeedsUploadProxy(image.srcUrl) || image.remoteImageUrl) {
-      return image;
-    }
-    if (!settings?.cloudMode) {
-      throw new Error(
-        "Uploaded images need Cloud Mode before they can be sent to cloud search or third-party reverse search."
-      );
-    }
-    if (!image.srcUrl.startsWith("data:image/")) {
-      throw new Error("This protected image cannot be uploaded from the extension yet.");
-    }
-
-    const upload = await uploadImageForSearch(
-      {
-        apiBaseUrl: settings.apiBaseUrl,
-        apiKey: settings.apiKey
-      },
-      {
-        image_data_url: image.srcUrl,
-        filename: image.title ?? image.id
-      }
-    );
-
-    const updatedImage: SelectedImage = {
-      ...image,
-      remoteImageUrl: upload.image_url,
-      remoteImageUploadedAt: new Date().toISOString()
-    };
-    await setCurrentImage(updatedImage);
-    await upsertHistoryEntry(updatedImage);
-    setCurrentImageState(updatedImage);
-    return updatedImage;
   }
 
   async function saveNoteDraft() {
@@ -333,7 +251,7 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     }
     await setNote(currentImage.id, noteDraft);
     setStatus("Note saved locally.");
-    await refresh();
+    await refreshSafely();
   }
 
   async function toggleCurrentFavorite() {
@@ -342,65 +260,13 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
     }
     const next = await toggleFavorite(currentImage.id);
     setStatus(next ? "Added to favorites." : "Removed from favorites.");
-    await refresh();
+    await refreshSafely();
   }
 
   async function selectHistoryItem(item: SearchHistoryItem) {
     await setCurrentImage(item.image);
     setStatus("Loaded history item.");
-    await refresh();
-  }
-
-  async function cloudSearch() {
-    if (!settings || !currentImage) {
-      return;
-    }
-    await runAction("cloud-search", async () => {
-      const cloudReadyImage = await ensureCloudReadyImage(currentImage);
-      const response = await runCloudSearch(
-        { apiBaseUrl: settings.apiBaseUrl, apiKey: settings.apiKey },
-        {
-          image_url: cloudReadyImage.remoteImageUrl ?? cloudReadyImage.srcUrl,
-          page_url: cloudReadyImage.pageUrl,
-          enabled_engines: settings.enabledEngines
-        }
-      );
-      setCloudResults(response.results);
-      setUsage(response.usage);
-      setStatus("Cloud search returned mock normalized results.");
-    });
-  }
-
-  async function cloudAnalyze() {
-    if (!settings || !currentImage) {
-      return;
-    }
-    await runAction("cloud-analyze", async () => {
-      const cloudReadyImage = await ensureCloudReadyImage(currentImage);
-      const response = await runCloudAnalyze(
-        { apiBaseUrl: settings.apiBaseUrl, apiKey: settings.apiKey },
-        {
-          image_url: cloudReadyImage.remoteImageUrl ?? cloudReadyImage.srcUrl,
-          page_url: cloudReadyImage.pageUrl
-        }
-      );
-      setCloudAnalysis(response);
-      setStatus("Cloud analysis returned mock AI hints.");
-    });
-  }
-
-  async function refreshUsage() {
-    if (!settings) {
-      return;
-    }
-    await runAction("cloud-search", async () => {
-      const response = await getCloudUsage({
-        apiBaseUrl: settings.apiBaseUrl,
-        apiKey: settings.apiKey
-      });
-      setUsage(response);
-      setStatus("Usage refreshed.");
-    });
+    await refreshSafely();
   }
 
   async function detectCrop(mode: "transparent" | "solid") {
@@ -493,7 +359,7 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
               <div>
                 <h1 className="text-lg font-semibold leading-tight">ImageLab</h1>
                 <p className="text-xs text-ink-500 dark:text-slate-400">
-                  Local reverse image workflow
+                  Local image workspace
                 </p>
               </div>
             </div>
@@ -502,6 +368,7 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
             className="it-button-secondary h-9 w-9 p-0"
             type="button"
             title="Open settings"
+            aria-label="Open settings"
             onClick={openOptions}
           >
             <Settings size={17} />
@@ -511,11 +378,11 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
         {status ? <StatusNotice tone="success">{status}</StatusNotice> : null}
         {error ? <StatusNotice tone="error">{error}</StatusNotice> : null}
 
-        {!settings ? (
+        {!converterSettings ? (
           <Panel className="p-5 text-sm text-ink-500">Loading ImageLab...</Panel>
         ) : (
           <>
-            <PrivacyStrip settings={settings} />
+            <PrivacyStrip />
             <ImageInputPanel
               manualUrl={manualUrl}
               busy={busy}
@@ -526,7 +393,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
             <CurrentImageCard
               image={currentImage}
               dimensions={dimensions}
-              uploadProxyHint={uploadProxyHint}
               isFavorite={isFavorite}
               onFavorite={toggleCurrentFavorite}
             />
@@ -550,43 +416,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
                   onDetectCrop={detectCrop}
                   onProcess={processCurrentImage}
                 />
-
-                <Panel className="p-3">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="text-sm font-semibold">Search engines</h2>
-                      <p className="text-xs text-ink-500 dark:text-slate-400">
-                        Opens a third-party page with the image URL.
-                      </p>
-                    </div>
-                    <Badge tone="warning">Sends to search engine</Badge>
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {enabledEngines.map((engine) => (
-                      <button
-                        key={engine.id}
-                        className="it-button-secondary justify-between"
-                        type="button"
-                        disabled={busy !== null}
-                        onClick={() => void openEngine(engine.id)}
-                      >
-                        <span className="flex items-center gap-2">
-                          {busy === engine.id ? <Loader2 className="animate-spin" size={16} /> : <ExternalLink size={16} />}
-                          {engine.name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    className="it-button-primary mt-3 w-full"
-                    type="button"
-                    disabled={busy !== null || enabledEngines.length === 0}
-                    onClick={() => void openAll()}
-                  >
-                    {busy === "all" ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
-                    Open all enabled engines
-                  </button>
-                </Panel>
 
                 <Panel className="p-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
@@ -638,16 +467,6 @@ export function ImageWorkspace({ surface }: ImageWorkspaceProps) {
                   </button>
                 </Panel>
 
-                <CloudSection
-                  settings={settings}
-                  usage={usage}
-                  results={cloudResults}
-                  analysis={cloudAnalysis}
-                  busy={busy}
-                  onSearch={cloudSearch}
-                  onAnalyze={cloudAnalyze}
-                  onRefreshUsage={refreshUsage}
-                />
               </>
             ) : null}
 
@@ -663,18 +482,19 @@ function Panel({ className = "", children }: { className?: string; children: Rea
   return <section className={`it-panel rounded-lg ${className}`}>{children}</section>;
 }
 
-function Badge({ tone, children }: { tone: "local" | "warning" | "cloud"; children: ReactNode }) {
-  const classes = {
-    local: "bg-signal-500/10 text-signal-600 dark:text-emerald-300",
-    warning: "bg-amber-400/15 text-amber-700 dark:text-amber-300",
-    cloud: "bg-berry-500/10 text-berry-600 dark:text-pink-300"
-  };
-  return <span className={`it-badge ${classes[tone]}`}>{children}</span>;
+function Badge({ children }: { tone: "local"; children: ReactNode }) {
+  return (
+    <span className="it-badge bg-signal-500/10 text-signal-600 dark:text-emerald-300">
+      {children}
+    </span>
+  );
 }
 
 function StatusNotice({ tone, children }: { tone: "success" | "error"; children: ReactNode }) {
   return (
     <div
+      role={tone === "error" ? "alert" : "status"}
+      aria-live={tone === "error" ? "assertive" : "polite"}
       className={`rounded-md border p-3 text-sm ${
         tone === "success"
           ? "border-signal-500/30 bg-signal-500/10 text-signal-600 dark:text-emerald-300"
@@ -686,16 +506,16 @@ function StatusNotice({ tone, children }: { tone: "success" | "error"; children:
   );
 }
 
-function PrivacyStrip({ settings }: { settings: ImageLabSettings }) {
+function PrivacyStrip() {
   return (
     <Panel className="grid gap-2 p-3 text-xs text-ink-700 dark:text-slate-300">
       <div className="flex items-start gap-2">
         <ShieldCheck className="mt-0.5 shrink-0 text-signal-600" size={16} />
-        <span>{getThirdPartyDisclosure(settings)}</span>
+        <span>ImageLab processes images and stores data locally in your browser. External search integrations are inactive.</span>
       </div>
       <div className="flex items-start gap-2">
-        <Cloud className="mt-0.5 shrink-0 text-berry-600" size={16} />
-        <span>{getCloudDisclosure(settings)}</span>
+        <ShieldCheck className="mt-0.5 shrink-0 text-signal-600" size={16} />
+        <span>Cloud processing is inactive. ImageLab never sends image data to a backend in this build.</span>
       </div>
     </Panel>
   );
@@ -762,7 +582,7 @@ function ImageInputPanel({
         />
       </label>
       <p className="mt-2 text-xs text-ink-500 dark:text-slate-400">
-        Uploaded images stay local until you run cloud or reverse search.
+        Local files remain on this device. Adding a remote URL retrieves that image directly from its source; processing still happens locally.
       </p>
     </Panel>
   );
@@ -771,13 +591,11 @@ function ImageInputPanel({
 function CurrentImageCard({
   image,
   dimensions,
-  uploadProxyHint,
   isFavorite,
   onFavorite
 }: {
   image: SelectedImage | null;
   dimensions: string;
-  uploadProxyHint: string | null;
   isFavorite: boolean;
   onFavorite: () => void;
 }) {
@@ -832,6 +650,7 @@ function CurrentImageCard({
               }`}
               type="button"
               title={isFavorite ? "Remove favorite" : "Add favorite"}
+              aria-label={isFavorite ? "Remove favorite" : "Add favorite"}
               onClick={onFavorite}
             >
               <Star size={17} fill={isFavorite ? "currentColor" : "none"} />
@@ -849,12 +668,6 @@ function CurrentImageCard({
           </dl>
         </div>
       </div>
-      {uploadProxyHint ? (
-        <div className="flex items-start gap-2 border-t border-ink-100 bg-amber-400/10 p-3 text-xs text-amber-800 dark:border-slate-700 dark:text-amber-300">
-          <AlertTriangle className="mt-0.5 shrink-0" size={14} />
-          <span>{uploadProxyHint}</span>
-        </div>
-      ) : null}
     </Panel>
   );
 }
@@ -1334,87 +1147,6 @@ function ColorList({ colors }: { colors: Array<{ hex: string; percentage: number
   );
 }
 
-function CloudSection({
-  settings,
-  usage,
-  results,
-  analysis,
-  busy,
-  onSearch,
-  onAnalyze,
-  onRefreshUsage
-}: {
-  settings: ImageLabSettings;
-  usage: CloudUsage | null;
-  results: CloudSearchResult[];
-  analysis: CloudAnalysisResponse | null;
-  busy: BusyAction;
-  onSearch: () => void;
-  onAnalyze: () => void;
-  onRefreshUsage: () => void;
-}) {
-  return (
-    <Panel className="p-3">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Cloud size={17} />
-          <h2 className="text-sm font-semibold">Cloud mode</h2>
-        </div>
-        <Badge tone="cloud">Cloud Pro</Badge>
-      </div>
-
-      {!settings.cloudMode ? (
-        <p className="rounded-md bg-ink-50 p-3 text-sm text-ink-500 dark:bg-slate-800 dark:text-slate-400">
-          Cloud mode is off in settings. Local search and analysis remain fully usable.
-        </p>
-      ) : (
-        <div className="grid gap-3">
-          <div className="grid grid-cols-2 gap-2">
-            <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={onSearch}>
-              {busy === "cloud-search" ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
-              Cloud search
-            </button>
-            <button className="it-button-secondary" type="button" disabled={busy !== null} onClick={onAnalyze}>
-              {busy === "cloud-analyze" ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
-              AI analyze
-            </button>
-          </div>
-          <button className="it-button-secondary w-full" type="button" disabled={busy !== null} onClick={onRefreshUsage}>
-            Usage: {usage ? `${usage.used}/${usage.limit ?? "unlimited"} this month` : "refresh"}
-          </button>
-          {results.length > 0 ? (
-            <div className="grid gap-2">
-              {results.map((result) => (
-                <a
-                  key={`${result.engine}-${result.url}`}
-                  className="rounded-md border border-ink-100 bg-white p-3 text-sm hover:bg-ink-50 dark:border-slate-700 dark:bg-slate-950 dark:hover:bg-slate-900"
-                  href={result.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <div className="font-semibold">{result.title}</div>
-                  <div className="mt-1 text-xs text-ink-500 dark:text-slate-400">
-                    {result.engine} - {Math.round(result.confidence * 100)}%
-                  </div>
-                  <p className="mt-1 text-xs">{result.snippet}</p>
-                </a>
-              ))}
-            </div>
-          ) : null}
-          {analysis ? (
-            <div className="rounded-md bg-ink-50 p-3 text-sm dark:bg-slate-800">
-              <p className="font-semibold">{analysis.description}</p>
-              <p className="mt-2 text-xs text-ink-500 dark:text-slate-400">
-                Suggested: {analysis.suggested_queries.join(", ")}
-              </p>
-            </div>
-          ) : null}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 function HistoryList({
   history,
   notes,
@@ -1434,7 +1166,7 @@ function HistoryList({
         <Badge tone="local">Local</Badge>
       </div>
       {history.length === 0 ? (
-        <p className="text-sm text-ink-500 dark:text-slate-400">No searches recorded yet.</p>
+        <p className="text-sm text-ink-500 dark:text-slate-400">No images in history yet.</p>
       ) : (
         <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
           {history.map((item) => (

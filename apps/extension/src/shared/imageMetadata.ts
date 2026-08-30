@@ -33,7 +33,3 @@ export function formatDimensions(width?: number, height?: number): string {
   }
   return `${width} x ${height}`;
 }
-
-export function imageNeedsUploadProxy(srcUrl: string): boolean {
-  return srcUrl.startsWith("blob:") || srcUrl.startsWith("data:") || srcUrl.startsWith("file:");
-}

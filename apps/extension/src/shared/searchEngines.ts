@@ -46,6 +46,9 @@ export interface SearchUrlResult {
   reason?: string;
 }
 
+export const LOCAL_ONLY_SEARCH_DISABLED_REASON =
+  "Reverse image search is disabled in local-only mode. ImageLab does not send image data or image URLs to external services.";
+
 export function getSearchEngine(id: SearchEngineId): SearchEngineConfig {
   const engine = SEARCH_ENGINES.find((candidate) => candidate.id === id);
   if (!engine) {
@@ -65,59 +68,21 @@ export function isNetworkImageUrl(imageUrl: string): boolean {
 
 export function getUnsupportedImageReason(imageUrl: string): string {
   if (imageUrl.startsWith("data:")) {
-    return "This is an embedded data URL. Search engines need an uploaded image or public URL.";
+    return "Embedded image data stays local in this build; reverse image search is disabled.";
   }
   if (imageUrl.startsWith("blob:")) {
-    return "This is a page-local blob URL. A cloud upload/proxy flow is required for third-party search.";
+    return "Page-local image data stays local in this build; reverse image search is disabled.";
   }
   if (imageUrl.startsWith("file:")) {
-    return "Local file URLs cannot be sent directly to web search engines.";
+    return "Local file URLs stay on this device; reverse image search is disabled.";
   }
-  return "This image URL is not reachable by third-party search engines.";
+  return LOCAL_ONLY_SEARCH_DISABLED_REASON;
 }
 
 export function buildSearchUrl(engineId: SearchEngineId, imageUrl: string): SearchUrlResult {
-  if (!isNetworkImageUrl(imageUrl)) {
-    return {
-      ok: false,
-      reason: getUnsupportedImageReason(imageUrl)
-    };
-  }
-
-  const encoded = encodeURIComponent(imageUrl);
-
-  switch (engineId) {
-    case "google":
-      return {
-        ok: true,
-        url: `https://lens.google.com/uploadbyurl?url=${encoded}`
-      };
-    case "bing":
-      return {
-        ok: true,
-        url: `https://www.bing.com/images/search?view=detailv2&iss=sbi&form=SBIHMP&sbisrc=UrlPaste&q=imgurl:${encoded}`
-      };
-    case "tineye":
-      return {
-        ok: true,
-        url: `https://tineye.com/search?url=${encoded}`
-      };
-    case "yandex":
-      return {
-        ok: true,
-        url: `https://yandex.com/images/search?rpt=imageview&url=${encoded}`
-      };
-    case "saucenao":
-      return {
-        ok: true,
-        url: `https://saucenao.com/search.php?url=${encoded}`
-      };
-    default:
-      return {
-        ok: false,
-        reason: "Unsupported search engine."
-      };
-  }
+  void engineId;
+  void imageUrl;
+  return { ok: false, reason: LOCAL_ONLY_SEARCH_DISABLED_REASON };
 }
 
 export function buildEnabledSearchUrls(

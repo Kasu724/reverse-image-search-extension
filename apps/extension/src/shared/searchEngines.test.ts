@@ -9,38 +9,35 @@ import {
 describe("search engine URL builders", () => {
   const imageUrl = "https://example.com/images/cat with spaces.jpg?size=large&ref=unit";
 
-  it("builds Google Lens URL searches", () => {
+  it("does not build an external Google Lens URL in local-only mode", () => {
     const result = buildSearchUrl("google", imageUrl);
-    expect(result.ok).toBe(true);
-    expect(result.url).toContain("https://lens.google.com/uploadbyurl");
-    expect(result.url).toContain(encodeURIComponent(imageUrl));
+    expect(result.ok).toBe(false);
+    expect(result.url).toBeUndefined();
+    expect(result.reason).toContain("disabled in local-only mode");
   });
 
-  it("builds Bing Visual Search URL searches", () => {
+  it("does not build an external Bing URL in local-only mode", () => {
     const result = buildSearchUrl("bing", imageUrl);
-    expect(result.ok).toBe(true);
-    expect(result.url).toContain("https://www.bing.com/images/search");
-    expect(result.url).toContain(`imgurl:${encodeURIComponent(imageUrl)}`);
+    expect(result.ok).toBe(false);
+    expect(result.url).toBeUndefined();
   });
 
-  it("builds TinEye URL searches", () => {
+  it("does not build an external TinEye URL in local-only mode", () => {
     const result = buildSearchUrl("tineye", imageUrl);
-    expect(result.ok).toBe(true);
-    expect(result.url).toBe(`https://tineye.com/search?url=${encodeURIComponent(imageUrl)}`);
+    expect(result.ok).toBe(false);
+    expect(result.url).toBeUndefined();
   });
 
-  it("builds Yandex URL searches", () => {
+  it("does not build an external Yandex URL in local-only mode", () => {
     const result = buildSearchUrl("yandex", imageUrl);
-    expect(result.ok).toBe(true);
-    expect(result.url).toBe(
-      `https://yandex.com/images/search?rpt=imageview&url=${encodeURIComponent(imageUrl)}`
-    );
+    expect(result.ok).toBe(false);
+    expect(result.url).toBeUndefined();
   });
 
-  it("builds SauceNAO URL searches", () => {
+  it("does not build an external SauceNAO URL in local-only mode", () => {
     const result = buildSearchUrl("saucenao", imageUrl);
-    expect(result.ok).toBe(true);
-    expect(result.url).toBe(`https://saucenao.com/search.php?url=${encodeURIComponent(imageUrl)}`);
+    expect(result.ok).toBe(false);
+    expect(result.url).toBeUndefined();
   });
 
   it("rejects blob, data, and local URLs", () => {
@@ -52,6 +49,7 @@ describe("search engine URL builders", () => {
   it("builds an entry per enabled engine", () => {
     const results = buildEnabledSearchUrls(["google", "tineye"], imageUrl);
     expect(results.map((result) => result.engineId)).toEqual(["google", "tineye"]);
-    expect(results.every((result) => result.result.ok)).toBe(true);
+    expect(results.every((result) => !result.result.ok)).toBe(true);
+    expect(results.every((result) => !result.result.url)).toBe(true);
   });
 });
