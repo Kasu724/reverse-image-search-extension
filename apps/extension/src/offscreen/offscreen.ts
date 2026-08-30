@@ -8,6 +8,10 @@ import {
 import { createOcrAdapter, rgbToHex } from "../shared/imageAnalysis";
 import type { DominantColor, LocalImageAnalysis } from "../shared/types";
 
+const MAX_CLIPBOARD_BYTES = 150 * 1024 * 1024;
+const MAX_CLIPBOARD_DATA_URL_LENGTH = Math.ceil(MAX_CLIPBOARD_BYTES * 4 / 3) + 4096;
+const MAX_CLIPBOARD_PIXELS = 100_000_000;
+
 interface AnalyzeRequest {
   type: "OFFSCREEN_ANALYZE_IMAGE";
   srcUrl: string;
@@ -35,9 +39,14 @@ type OffscreenRequest =
   | DetectCropRequest
   | CopyImageToClipboardRequest;
 
-chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendResponse) => {
-  if (request.type === CONVERT_IMAGE_MESSAGE_TYPE) {
-    void convertImageRequest(request.payload as Record<string, unknown>)
+chrome.runtime.onMessage.addListener((request: unknown, _sender, sendResponse) => {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return false;
+  }
+
+  const message = request as Partial<OffscreenRequest>;
+  if (message.type === CONVERT_IMAGE_MESSAGE_TYPE) {
+    void convertImageRequest(message.payload as Record<string, unknown>)
       .then((result) =>
         sendResponse({
           ok: true,
@@ -54,8 +63,8 @@ chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendRe
     return true;
   }
 
-  if (request.type === DETECT_CROP_MESSAGE_TYPE) {
-    void detectCropRequest(request.payload as Record<string, unknown>)
+  if (message.type === DETECT_CROP_MESSAGE_TYPE) {
+    void detectCropRequest(message.payload as Record<string, unknown>)
       .then((result) =>
         sendResponse({
           ok: true,
@@ -72,8 +81,8 @@ chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendRe
     return true;
   }
 
-  if (request.type === COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE) {
-    void copyImageToClipboard(request.dataUrl, request.mimeType)
+  if (message.type === COPY_IMAGE_TO_CLIPBOARD_MESSAGE_TYPE) {
+    void copyImageToClipboard(message.dataUrl as string, message.mimeType)
       .then(() =>
         sendResponse({
           ok: true
@@ -89,11 +98,11 @@ chrome.runtime.onMessage.addListener((request: OffscreenRequest, _sender, sendRe
     return true;
   }
 
-  if (request.type !== "OFFSCREEN_ANALYZE_IMAGE") {
+  if (message.type !== "OFFSCREEN_ANALYZE_IMAGE") {
     return false;
   }
 
-  void analyzeImage(request.srcUrl)
+  void analyzeImage((message as Partial<AnalyzeRequest>).srcUrl as string)
     .then((analysis) =>
       sendResponse({
         ok: true,
@@ -149,8 +158,20 @@ async function copyImageToClipboard(dataUrl: string, mimeType = "image/png"): Pr
 }
 
 function dataUrlToBlob(dataUrl: string, fallbackMimeType: string): Blob {
+  if (typeof dataUrl !== "string" || !/^data:/i.test(dataUrl)) {
+    throw new ConversionError(
+      "clipboard_data_url_invalid",
+      "The converted image data could not be read for copying."
+    );
+  }
+  if (dataUrl.length > MAX_CLIPBOARD_DATA_URL_LENGTH) {
+    throw new ConversionError(
+      "clipboard_data_too_large",
+      "The image is too large to copy safely to the clipboard."
+    );
+  }
   const commaIndex = dataUrl.indexOf(",");
-  if (!dataUrl.startsWith("data:") || commaIndex < 0) {
+  if (commaIndex < 0) {
     throw new ConversionError(
       "clipboard_data_url_invalid",
       "The converted image data could not be read for copying."
@@ -167,6 +188,13 @@ function dataUrlToBlob(dataUrl: string, fallbackMimeType: string): Blob {
   const mediaType =
     metadataParts.find((part) => part.includes("/")) || fallbackMimeType || "image/png";
   const bytes = isBase64 ? base64ToBytes(payload) : urlEncodedPayloadToBytes(payload);
+
+  if (bytes.byteLength > MAX_CLIPBOARD_BYTES) {
+    throw new ConversionError(
+      "clipboard_data_too_large",
+      "The image is too large to copy safely to the clipboard."
+    );
+  }
 
   return new Blob([bytesToArrayBuffer(bytes)], { type: normalizeMimeType(mediaType) });
 }
@@ -193,20 +221,34 @@ function base64ToBytes(payload: string): Uint8Array {
 }
 
 function urlEncodedPayloadToBytes(payload: string): Uint8Array {
-  try {
-    return new TextEncoder().encode(decodeURIComponent(payload));
-  } catch (error) {
-    throw new ConversionError(
-      "clipboard_data_url_decode_failed",
-      "The converted image data could not be decoded for copying.",
-      {
-        originalError: error instanceof Error ? error.message : String(error)
-      }
-    );
+  const encoded = new TextEncoder();
+  const bytes: number[] = [];
+
+  for (let index = 0; index < payload.length; index += 1) {
+    if (payload[index] === "%" && /^[0-9a-f]{2}$/i.test(payload.slice(index + 1, index + 3))) {
+      bytes.push(Number.parseInt(payload.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+
+    const codePoint = payload.codePointAt(index) ?? 0;
+    bytes.push(...encoded.encode(String.fromCodePoint(codePoint)));
+    if (codePoint > 0xffff) {
+      index += 1;
+    }
   }
+
+  return new Uint8Array(bytes);
 }
 
 async function ensurePngClipboardBlob(blob: Blob): Promise<Blob> {
+  if (blob.size > MAX_CLIPBOARD_BYTES) {
+    throw new ConversionError(
+      "clipboard_data_too_large",
+      "The image is too large to copy safely to the clipboard."
+    );
+  }
+
   if (normalizeMimeType(blob.type) === "image/png") {
     return blob;
   }
@@ -215,6 +257,12 @@ async function ensurePngClipboardBlob(blob: Blob): Promise<Blob> {
 
   try {
     bitmap = await createImageBitmap(blob);
+    if (bitmap.width <= 0 || bitmap.height <= 0 || bitmap.width * bitmap.height > MAX_CLIPBOARD_PIXELS) {
+      throw new ConversionError(
+        "clipboard_image_too_large",
+        "The image dimensions are too large to copy safely to the clipboard."
+      );
+    }
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const context = canvas.getContext("2d");
 
@@ -238,7 +286,9 @@ async function ensurePngClipboardBlob(blob: Blob): Promise<Blob> {
 }
 
 function normalizeMimeType(mimeType: string): string {
-  return mimeType.split(";", 1)[0]?.trim().toLowerCase() || "image/png";
+  return typeof mimeType === "string"
+    ? mimeType.split(";", 1)[0]?.trim().toLowerCase() || "image/png"
+    : "image/png";
 }
 
 function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -248,6 +298,9 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 async function analyzeImage(srcUrl: string): Promise<LocalImageAnalysis> {
+  if (typeof srcUrl !== "string" || !srcUrl.trim()) {
+    throw new Error("The image URL is invalid for local analysis.");
+  }
   const image = await loadImage(srcUrl);
   const dominantColors = await extractDominantColors(image);
   const ocrAdapter = await createOcrAdapter();

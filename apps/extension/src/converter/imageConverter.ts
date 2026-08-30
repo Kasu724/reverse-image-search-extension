@@ -20,11 +20,15 @@ import { normalizeSettings } from "./settings";
 import { isDataUrl } from "./urls";
 
 const MAX_INPUT_BYTES = 150 * 1024 * 1024;
+// Base64 expands binary data by roughly 4/3. Keep a small amount of room for
+// the data URL header while rejecting pathological strings before decoding.
+const MAX_DATA_URL_LENGTH = Math.ceil(MAX_INPUT_BYTES * 4 / 3) + 4096;
 const MAX_CANVAS_PIXELS = 100_000_000;
 const DEFAULT_SVG_SIZE = 512;
 const FETCH_TIMEOUT_MS = 45_000;
 
 export async function convertImageRequest(payload = {}) {
+  assertRequestObject(payload);
   const settings = normalizeSettings(payload.settings);
   const targetFormat = normalizeFormat(payload.targetFormat);
   const compression = normalizeCompressionOptions(payload.compression, settings);
@@ -55,10 +59,11 @@ export async function convertImageRequest(payload = {}) {
       !compression &&
       formatMatches(sourceFormat, targetFormat)
     ) {
+      const outputBlob = withMimeType(source.blob, MIME_BY_FORMAT[targetFormat]);
       return {
-        dataUrl: await blobToDataUrl(source.blob),
+        dataUrl: await blobToDataUrl(outputBlob),
         filename,
-        mimeType: source.mimeType || MIME_BY_FORMAT[targetFormat],
+        mimeType: outputBlob.type,
         byteLength: source.blob.size,
         width: null,
         height: null,
@@ -95,7 +100,14 @@ export async function convertImageRequest(payload = {}) {
   }
 }
 
+export function withMimeType(blob, mimeType) {
+  return normalizeMimeType(blob.type) === normalizeMimeType(mimeType)
+    ? blob
+    : new Blob([blob], { type: normalizeMimeType(mimeType) });
+}
+
 export async function detectCropRequest(payload = {}) {
+  assertRequestObject(payload);
   const source = await loadSourceBlob(payload);
   const sourceFormat = await detectSourceFormat({
     blob: source.blob,
@@ -116,7 +128,10 @@ export async function detectCropRequest(payload = {}) {
 }
 
 async function loadSourceBlob(payload) {
-  if (payload.sourceDataUrl) {
+  if (payload.sourceDataUrl !== undefined && payload.sourceDataUrl !== null) {
+    if (typeof payload.sourceDataUrl !== "string" || !payload.sourceDataUrl.trim()) {
+      throw new ConversionError("invalid_source", "The selected image data is not valid.");
+    }
     const blob = await dataUrlToBlob(payload.sourceDataUrl, payload.sourceMimeType);
     assertInputSize(blob);
     return {
@@ -194,21 +209,97 @@ async function loadSourceBlob(payload) {
   }
 }
 
-async function dataUrlToBlob(dataUrl, fallbackMimeType = "") {
+export function dataUrlToBlob(dataUrl, fallbackMimeType = "") {
+  if (typeof dataUrl !== "string" || !/^data:/i.test(dataUrl)) {
+    throw new ConversionError("data_url_decode_failed", "The embedded image data could not be decoded.");
+  }
+
+  if (dataUrl.length > MAX_DATA_URL_LENGTH) {
+    throw new ConversionError(
+      "image_too_large",
+      "This embedded image is too large to convert safely in the browser.",
+      { maxBytes: MAX_INPUT_BYTES }
+    );
+  }
+
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex < 0) {
+    throw new ConversionError("data_url_decode_failed", "The embedded image data could not be decoded.");
+  }
+
+  const metadata = dataUrl.slice(5, commaIndex);
+  const payload = dataUrl.slice(commaIndex + 1);
+  const parts = metadata.split(";").map((part) => part.trim()).filter(Boolean);
+  const isBase64 = parts.some((part) => part.toLowerCase() === "base64");
+  const declaredMimeType = parts.find((part) => part.includes("/")) || "";
+  const mediaType = normalizeMimeType(declaredMimeType || fallbackMimeType);
+
+  if (declaredMimeType && !/^[^\s;,]+\/[^\s;,]+$/.test(declaredMimeType)) {
+    throw new ConversionError("data_url_decode_failed", "The embedded image data could not be decoded.");
+  }
+
   try {
-    const response = await fetch(dataUrl);
-    const blob = await response.blob();
-    if (blob.type || !fallbackMimeType) {
-      return blob;
+    let bytes;
+    if (isBase64) {
+      const normalizedPayload = payload.replace(/[\t\n\f\r ]/g, "");
+      if (normalizedPayload.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalizedPayload)) {
+        throw new Error("Invalid base64 data.");
+      }
+      const binary = atob(normalizedPayload);
+      bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+    } else {
+      bytes = urlEncodedPayloadToBytes(payload);
     }
 
-    return new Blob([blob], { type: normalizeMimeType(fallbackMimeType) });
+    if (bytes.byteLength > MAX_INPUT_BYTES) {
+      throw new ConversionError(
+        "image_too_large",
+        "This embedded image is too large to convert safely in the browser.",
+        { maxBytes: MAX_INPUT_BYTES, actualBytes: bytes.byteLength }
+      );
+    }
+
+    return new Blob([bytes], { type: mediaType });
   } catch (error) {
+    if (error instanceof ConversionError) {
+      throw error;
+    }
     throw new ConversionError(
       "data_url_decode_failed",
       "The embedded image data could not be decoded.",
       { message: error?.message || String(error) }
     );
+  }
+}
+
+function urlEncodedPayloadToBytes(payload) {
+  const encoded = new TextEncoder();
+  const bytes = [];
+
+  for (let index = 0; index < payload.length; index += 1) {
+    if (payload[index] === "%" && /^[0-9a-f]{2}$/i.test(payload.slice(index + 1, index + 3))) {
+      bytes.push(Number.parseInt(payload.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+
+    const codePoint = payload.codePointAt(index);
+    const character = String.fromCodePoint(codePoint);
+    bytes.push(...encoded.encode(character));
+    if (codePoint > 0xffff) {
+      index += 1;
+    }
+  }
+
+  return new Uint8Array(bytes);
+}
+
+function assertRequestObject(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ConversionError("invalid_request", "The image conversion request is invalid.");
   }
 }
 
@@ -426,7 +517,7 @@ async function decodeSvgToCanvas(blob) {
   }
 }
 
-function buildSizedSvg(svgText) {
+export function buildSizedSvg(svgText) {
   const document = new DOMParser().parseFromString(svgText, "image/svg+xml");
   const parserError = document.querySelector("parsererror");
   if (parserError) {
@@ -437,6 +528,11 @@ function buildSizedSvg(svgText) {
   if (!svg || svg.localName.toLowerCase() !== "svg") {
     throw new ConversionError("svg_parse_failed", "The selected file is not an SVG image.");
   }
+
+  // Rendering an SVG in an Image element can still resolve linked resources.
+  // Reject external references so converting a local file cannot trigger an
+  // implicit request to an origin named inside the SVG.
+  assertSvgIsLocal(svg);
 
   const viewBox = parseViewBox(svg.getAttribute("viewBox"));
   let width = parseSvgLength(svg.getAttribute("width"));
@@ -470,6 +566,77 @@ function buildSizedSvg(svgText) {
     width,
     height
   };
+}
+
+function assertSvgIsLocal(svg) {
+  const elements = [svg, ...svg.querySelectorAll("*")];
+  for (const element of elements) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim();
+      const elementName = element.localName.toLowerCase();
+      const isResourceReference =
+        (name === "href" || name === "xlink:href")
+          ? elementName !== "a"
+          : ["src"].includes(name) && ["image", "audio", "video", "iframe", "script"].includes(elementName);
+      if (isResourceReference && isExternalSvgReference(value)) {
+        throw new ConversionError(
+          "svg_external_resource",
+          "This SVG references an external resource and cannot be converted in local-only mode."
+        );
+      }
+      if ((name === "style" || name === "fill" || name === "stroke" || name === "filter") && containsExternalSvgUrl(value)) {
+        throw new ConversionError(
+          "svg_external_resource",
+          "This SVG references an external resource and cannot be converted in local-only mode."
+        );
+      }
+    }
+
+    if (element.localName.toLowerCase() === "style" && containsExternalSvgUrl(element.textContent || "")) {
+      throw new ConversionError(
+        "svg_external_resource",
+        "This SVG references an external resource and cannot be converted in local-only mode."
+      );
+    }
+
+    if (["script", "iframe", "object", "embed", "foreignobject", "link"].includes(element.localName.toLowerCase())) {
+      throw new ConversionError(
+        "svg_unsafe_content",
+        "This SVG contains active or embedded content and cannot be converted safely."
+      );
+    }
+  }
+}
+
+function isExternalSvgReference(value) {
+  if (!value || value.startsWith("#") || /^(?:data|blob):/i.test(value)) {
+    return false;
+  }
+
+  // Relative references are also unsafe here: once the SVG is loaded from a
+  // blob URL they may resolve against an extension/page origin and still
+  // trigger a resource load. Only fragment and embedded data references are
+  // local by construction.
+  return true;
+}
+
+function containsExternalSvgUrl(value) {
+  const urlReferences = value.matchAll(/url\(\s*["']?([^\)"']+)["']?\s*\)/gi);
+  for (const match of urlReferences) {
+    if (isExternalSvgReference(match[1].trim())) {
+      return true;
+    }
+  }
+
+  const imports = value.matchAll(/@import\s+(?:url\(\s*["']?([^\)"']+)["']?\s*\)|["']([^"']+)["'])/gi);
+  for (const match of imports) {
+    if (isExternalSvgReference((match[1] || match[2] || "").trim())) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function parseSvgLength(value) {
@@ -532,7 +699,7 @@ function hasCropRequest(payload) {
   return Boolean(payload?.crop || payload?.autoCrop);
 }
 
-function normalizeCropRect(crop, sourceWidth, sourceHeight) {
+export function normalizeCropRect(crop, sourceWidth, sourceHeight) {
   if (!crop || typeof crop !== "object") {
     return null;
   }
