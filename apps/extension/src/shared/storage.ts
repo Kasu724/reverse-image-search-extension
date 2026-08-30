@@ -1,8 +1,4 @@
-import {
-  DEFAULT_API_BASE_URL,
-  MAX_HISTORY_ITEMS,
-  STORAGE_KEYS
-} from "./constants";
+import { MAX_HISTORY_ITEMS, MAX_HISTORY_STORAGE_BYTES, STORAGE_KEYS } from "./constants";
 import type {
   ImageLabSettings,
   NotesByImageId,
@@ -12,17 +8,21 @@ import type {
 } from "./types";
 
 export const DEFAULT_SETTINGS: ImageLabSettings = {
-  enabledEngines: ["google", "bing", "tineye", "yandex", "saucenao"],
+  enabledEngines: [],
   privacyMode: true,
-  instantOpen: false,
-  cloudMode: false,
-  apiBaseUrl: DEFAULT_API_BASE_URL,
-  apiKey: ""
+  instantOpen: false
 };
 
 function storageGet<T>(keys: string[] | Record<string, unknown>): Promise<T> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(keys, (items) => resolve(items as T));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items as T);
+    });
   });
 }
 
@@ -39,6 +39,31 @@ function storageSet(items: Record<string, unknown>): Promise<void> {
   });
 }
 
+let mutationQueue: Promise<void> = Promise.resolve();
+
+function serializeMutation<T>(mutation: () => Promise<T>): Promise<T> {
+  const result = mutationQueue.then(mutation, mutation);
+  mutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function trimHistory(history: SearchHistoryItem[]): SearchHistoryItem[] {
+  const next = history.slice(0, MAX_HISTORY_ITEMS);
+  while (next.length > 1 && JSON.stringify(next).length > MAX_HISTORY_STORAGE_BYTES) {
+    next.pop();
+  }
+  return next;
+}
+
+function mergeDefined<T extends object>(base: T, incoming: Partial<T>): T {
+  const definedIncoming = Object.fromEntries(
+    Object.entries(incoming).filter(([, value]) => value !== undefined)
+  );
+  return Object.fromEntries(
+    Object.entries({ ...base, ...definedIncoming })
+  ) as T;
+}
+
 export async function getSettings(): Promise<ImageLabSettings> {
   const result = await storageGet<Record<string, ImageLabSettings>>({
     [STORAGE_KEYS.settings]: DEFAULT_SETTINGS
@@ -50,12 +75,11 @@ export async function getSettings(): Promise<ImageLabSettings> {
 }
 
 export async function saveSettings(settings: Partial<ImageLabSettings>): Promise<void> {
-  const current = await getSettings();
-  await storageSet({
-    [STORAGE_KEYS.settings]: {
-      ...current,
-      ...settings
-    }
+  return serializeMutation(async () => {
+    const current = await getSettings();
+    await storageSet({
+      [STORAGE_KEYS.settings]: { ...current, ...settings }
+    });
   });
 }
 
@@ -95,29 +119,17 @@ export async function upsertHistoryEntry(
   image: SelectedImage,
   engines: SearchEngineId[] = []
 ): Promise<SearchHistoryItem[]> {
-  const [history, notes, favorites] = await Promise.all([
-    getHistory(),
-    getNotes(),
-    getFavorites()
-  ]);
-  const now = new Date().toISOString();
-  const existing = history.find((item) => item.id === image.id);
-  const engineSet = new Set<SearchEngineId>([...(existing?.engines ?? []), ...engines]);
-  const updated: SearchHistoryItem = {
-    id: image.id,
-    image,
-    engines: [...engineSet],
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    favorite: favorites.includes(image.id),
-    note: notes[image.id]
-  };
-  const next = [updated, ...history.filter((item) => item.id !== image.id)].slice(
-    0,
-    MAX_HISTORY_ITEMS
-  );
-  await storageSet({ [STORAGE_KEYS.searchHistory]: next });
-  return next;
+  return serializeMutation(async () => {
+    const [history, notes, favorites] = await Promise.all([getHistory(), getNotes(), getFavorites()]);
+    const now = new Date().toISOString();
+    const existing = history.find((item) => item.id === image.id);
+    const engineSet = new Set<SearchEngineId>([...(existing?.engines ?? []), ...engines]);
+    const mergedImage = mergeDefined(existing?.image ?? image, image);
+    const updated: SearchHistoryItem = { id: image.id, image: mergedImage, engines: [...engineSet], createdAt: existing?.createdAt ?? now, updatedAt: now, favorite: favorites.includes(image.id), note: notes[image.id] };
+    const next = trimHistory([updated, ...history.filter((item) => item.id !== image.id)]);
+    await storageSet({ [STORAGE_KEYS.searchHistory]: next });
+    return next;
+  });
 }
 
 export async function updateCurrentImage(partial: Partial<SelectedImage>): Promise<SelectedImage | null> {
@@ -135,46 +147,23 @@ export async function updateCurrentImage(partial: Partial<SelectedImage>): Promi
 }
 
 export async function setNote(imageId: string, note: string): Promise<void> {
-  const [notes, history] = await Promise.all([getNotes(), getHistory()]);
-  const nextNotes = {
-    ...notes,
-    [imageId]: note
-  };
-  const nextHistory = history.map((item) =>
-    item.id === imageId
-      ? {
-          ...item,
-          note,
-          updatedAt: new Date().toISOString()
-        }
-      : item
-  );
-  await storageSet({
-    [STORAGE_KEYS.notes]: nextNotes,
-    [STORAGE_KEYS.searchHistory]: nextHistory
+  return serializeMutation(async () => {
+    const [notes, history] = await Promise.all([getNotes(), getHistory()]);
+    const nextNotes = { ...notes, [imageId]: note };
+    const nextHistory = history.map((item) => item.id === imageId ? { ...item, note, updatedAt: new Date().toISOString() } : item);
+    await storageSet({ [STORAGE_KEYS.notes]: nextNotes, [STORAGE_KEYS.searchHistory]: trimHistory(nextHistory) });
   });
 }
 
 export async function toggleFavorite(imageId: string): Promise<boolean> {
-  const [favorites, history] = await Promise.all([getFavorites(), getHistory()]);
-  const isFavorite = favorites.includes(imageId);
-  const nextFavorites = isFavorite
-    ? favorites.filter((favoriteId) => favoriteId !== imageId)
-    : [...favorites, imageId];
-  const nextHistory = history.map((item) =>
-    item.id === imageId
-      ? {
-          ...item,
-          favorite: !isFavorite,
-          updatedAt: new Date().toISOString()
-        }
-      : item
-  );
-  await storageSet({
-    [STORAGE_KEYS.favorites]: nextFavorites,
-    [STORAGE_KEYS.searchHistory]: nextHistory
+  return serializeMutation(async () => {
+    const [favorites, history] = await Promise.all([getFavorites(), getHistory()]);
+    const isFavorite = favorites.includes(imageId);
+    const nextFavorites = isFavorite ? favorites.filter((favoriteId) => favoriteId !== imageId) : [...favorites, imageId];
+    const nextHistory = history.map((item) => item.id === imageId ? { ...item, favorite: !isFavorite, updatedAt: new Date().toISOString() } : item);
+    await storageSet({ [STORAGE_KEYS.favorites]: nextFavorites, [STORAGE_KEYS.searchHistory]: trimHistory(nextHistory) });
+    return !isFavorite;
   });
-  return !isFavorite;
 }
 
 export function subscribeToStorage(

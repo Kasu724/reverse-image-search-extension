@@ -8,8 +8,6 @@ export const STORAGE_KEYS = {
   favorites: "imagelab.search.favorites"
 } as const;
 
-export const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
-
 export const CONTEXT_MENU_ID = "imagelab-image";
 export const CONTEXT_MENU_IDS = {
   openImageLab: "imagelab-open",
@@ -46,3 +44,6 @@ export const CONTEXT_IMAGE_DETECTED_MESSAGE_TYPE = "imagelab:context-image-detec
 export const DETECT_CROP_MESSAGE_TYPE = "imagelab:detect-crop";
 
 export const MAX_HISTORY_ITEMS = 60;
+// chrome.storage.local has a finite quota. Keep history useful without
+// allowing embedded uploads to crowd out settings and the current image.
+export const MAX_HISTORY_STORAGE_BYTES = 5_000_000;
