@@ -2,7 +2,7 @@
   "name": "imagelab",
   "version": "1.0.0",
   "private": true,
-  "description": "Combined Chromium extension for right-click image conversion and reverse image search.",
+  "description": "Local-only Chromium extension for image conversion, cropping, compression, and analysis.",
   "packageManager": "pnpm@9.15.4",
   "engines": {
     "node": ">=20"

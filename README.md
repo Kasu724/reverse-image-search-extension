@@ -1,88 +1,54 @@
 # ImageLab
 
-ImageLab is an all-in-one Manifest V3 Chromium extension for image tools such as format conversion, cropping, compression, reverse-image searching,
+ImageLab is an open-source, MIT-licensed Manifest V3 Chromium extension for local image conversion and inspection.
+
+The active product is local-only. It has no hosted backend dependency, cloud processing, remote AI, analytics, telemetry, third-party image processor, or silent upload. Reverse-image-search navigation is disabled in this phase, so ImageLab does not disclose selected image URLs or bytes to search providers.
 
 ## Features
 
-- Right-click an image, open **ImageLab**, then choose **Convert**, **Crop**, **Compress**, or **Search**.
-- Convert and download selected images as PNG, JPG, or WEBP.
-- Use quick convert with a configurable default output format.
-- Crop manually in the ImageLab UI, apply aspect-ratio crops, or auto-trim transparent and solid-color borders.
-- Compress images to a target size from the UI or right-click presets for 1, 2, 5, and 10 MB.
-- Open the ImageLab popup/side panel to paste an image URL, upload a small local image, view local analysis, save notes, mark favorites, and review history.
+- Convert selected images to PNG, JPG, or WebP from the context menu or workspace.
+- Crop manually, apply common aspect ratios, or trim transparent and solid-color borders.
+- Compress toward a target file size, with optional dimension reduction.
+- Copy processed images or download them with predictable, sanitized filenames.
+- Inspect dimensions and dominant colors locally in an MV3 offscreen document.
+- Upload a local image or enter an image URL, then keep local notes, favorites, and bounded history in `chrome.storage.local`.
+- Configure output quality, dimensions, compression defaults, save-dialog behavior, and redundant-conversion handling.
 
+Selecting an image already displayed on a web page or entering a remote image URL may retrieve that image directly from its source host. The retrieved bytes are processed on the device and are not forwarded to an ImageLab server or third-party processing service.
 
+## Project layout
 
+- `apps/extension`: the active Chromium extension.
+- `apps/api`: inactive FastAPI scaffolding retained for separately reviewed future work. The extension does not import, start, require, or call it.
+- `docs`: product, privacy, deployment, and future-planning notes.
 
-- Combine crop, compression, and format conversion in one local processing step.
-- Preserve dimensions by default, or scale down to a max width and/or height.
-- Configure JPG quality, WEBP quality, JPG background color, compression defaults, save-dialog behavior, and redundant-conversion skipping.
-- Search selected image URLs with Google Images, Bing Visual Search, TinEye, Yandex Images, SauceNAO, or all enabled engines.
+## Setup and validation
 
-- Run local dominant-color analysis through an MV3 offscreen document.
-- Use the optional FastAPI backend for cloud-mode upload/search/analyze workflows.
-
-## Project Layout
-
-- `apps/extension`: the ImageLab Chrome extension.
-- `apps/api`: optional local FastAPI backend used by cloud mode.
-- `docs`: backend/cloud planning and deployment notes.
-
-## Setup
-
-Install JavaScript dependencies:
+Requires Node.js 20 or newer and pnpm 9.
 
 ```bash
 pnpm install
-```
-
-Install backend dependencies only if you plan to use cloud mode:
-
-```bash
-cd apps/api
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -e ".[dev]"
-```
-
-## Build And Load
-
-Build the unpacked extension:
-
-```bash
-pnpm build
-```
-
-Load `apps/extension/dist` as an unpacked extension from `chrome://extensions`, `edge://extensions`, or another Chromium extension page with Developer mode enabled.
-
-## Development
-
-```bash
-pnpm dev:extension
 pnpm typecheck
 pnpm test
+pnpm test:api
 pnpm build
 ```
 
-For the optional backend:
+Load `apps/extension/dist` as an unpacked extension from a Chromium extensions page with Developer mode enabled.
 
-```bash
-cd apps/api
-.venv\Scripts\activate
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
+The extension requests access to HTTP(S) pages so its content script can identify the image the user selected and the local converter can retrieve those selected source bytes. It also uses context menus, downloads, offscreen canvas/document APIs, storage, scripting, clipboard write access, and temporary active-tab capture for protected or page-local images.
 
-Seeded local credentials:
+## Inactive API scaffolding
 
-- API base URL: `http://127.0.0.1:8000`
-- API key: `dev_imagelab_key`
-- User: `demo@imagelab.local`
-- Plan: `pro`
+The API is not part of the active product. For local backend development only, follow [apps/api/README.md](apps/api/README.md) and bind it to `127.0.0.1`. Do not deploy or expose it publicly during the local-only phase.
 
-## Notes
+## Known limits
 
-- Conversion happens locally in the browser. It fetches only the image URL selected from the context menu.
-- Third-party reverse search opens external search-engine pages with the selected image URL.
-- Uploaded/data/blob/local images need cloud mode before third-party search engines can access them.
-- Animated GIF, animated WEBP, and APNG conversion uses the first frame.
-- Very large images are limited by browser memory and canvas limits.
+- Animated GIF, animated WebP, and APNG conversion uses the first frame.
+- Very large images remain subject to browser memory and canvas limits.
+- Some protected images cannot be read directly; ImageLab attempts a local visible-tab capture when permitted.
+- OCR is not implemented in the active build; the existing adapter reports it as unavailable and performs no network request.
+
+## License
+
+Copyright (c) 2026 Kasu724. Released under the [MIT License](LICENSE).
